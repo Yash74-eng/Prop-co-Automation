@@ -42,6 +42,21 @@ npm start                   # http://localhost:5173
 
 Requires Node 20 or newer.
 
+### The app
+
+Five steps down the left, each unlocked by the one before it.
+
+| Step | What you do |
+|---|---|
+| **1 · Upload** | Drop the workbook. It picks the Main Database sheet, shows how many rows parsed and which fields mapped, and previews the first rows so you can confirm the header row was read correctly. |
+| **2 · Configure** | Channel, mail date, outreach filter, and the exclusion/dedupe thresholds. Optional comps-benchmark override and suppression list. Every setting says what it does and what happens if you change it. |
+| **3 · Review** | Recipient count and the generated rows in a searchable, sortable grid. **Click any row** to open a drill-down showing the source rows that merged into it, the exact merge decisions taken, and every flag against it. A *Where rows went* tab shows the funnel — 6,672 source rows down to 1,452 recipients, with the drop at each stage and the reasons behind it. |
+| **4 · Verify** | Run the BizFile check and the Claude cross-check. Findings appear in-app and are appended to the workbook. |
+| **5 · Mail merge** | Validate a `.docx` against the generated headers and copy the command that exports the PDFs. |
+
+The job survives a page reload, there is a dark mode, and a pre-send checklist sits on the
+last step.
+
 ### Command line
 
 ```bash
@@ -330,7 +345,8 @@ src/verify/     Claude cross-check
 src/mailmerge/  merge-field validation and the Word COM script
 src/server/     Express API and job store
 src/cli.ts      command-line runner
-web/            Vite + React wizard UI
+web/src/ui.tsx  UI primitives — data grid, funnel, drawer, toasts, dropzone
+web/src/views/  the five steps
 test/           unit tests, workbook round-trip, real-data coverage harness
 ```
 

@@ -313,6 +313,143 @@ router.get('/jobs/:id/flags', (req, res) => {
   }
 });
 
+/**
+ * GET /api/jobs/:id/funnel — where rows were lost, stage by stage.
+ * The pipeline drops thousands of rows; this is what makes that legible.
+ */
+router.get('/jobs/:id/funnel', (req, res) => {
+  try {
+    const job = requireJob(String(req.params.id));
+    if (!job.result) throw new Error('Nothing generated yet for this job');
+    const s = job.result.stats;
+
+    const byStage = new Map<string, { label: string; count: number; reasons: Map<string, number> }>();
+    for (const e of job.result.exclusions) {
+      if (!byStage.has(e.stage)) {
+        byStage.set(e.stage, { label: e.stage, count: 0, reasons: new Map() });
+      }
+      const entry = byStage.get(e.stage)!;
+      entry.count++;
+      entry.reasons.set(e.reason, (entry.reasons.get(e.reason) ?? 0) + 1);
+    }
+
+    res.json({
+      stages: [
+        { key: 'sourceRows', label: 'Source rows', value: s.sourceRows ?? 0 },
+        { key: 'afterOutreachFilter', label: 'Passed outreach filter', value: s.afterOutreachFilter ?? 0 },
+        { key: 'afterSuppression', label: 'Passed suppression', value: s.afterSuppression ?? 0 },
+        { key: 'ownerRowsExploded', label: 'Owner rows', value: s.ownerRowsExploded ?? 0 },
+        { key: 'ownerRowsKept', label: 'Owners kept', value: s.ownerRowsKept ?? 0 },
+        { key: 'recipients', label: 'Recipients', value: s.recipients ?? 0 },
+      ],
+      drops: [...byStage.values()].map((entry) => ({
+        stage: entry.label,
+        count: entry.count,
+        reasons: [...entry.reasons.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .map(([label, count]) => ({ label, count })),
+      })),
+      outreach: Object.entries(s)
+        .filter(([k]) => k.startsWith('outreach_'))
+        .map(([k, v]) => ({ label: k.replace('outreach_', ''), count: v })),
+    });
+  } catch (error) {
+    fail(res, error);
+  }
+});
+
+/**
+ * GET /api/jobs/:id/recipients/:index — one recipient with the source rows that merged
+ * into it and the merge decisions taken. This is the drill-down that makes a merged
+ * address checkable without opening the workbook.
+ */
+router.get('/jobs/:id/recipients/:index', (req, res) => {
+  try {
+    const job = requireJob(String(req.params.id));
+    if (!job.result) throw new Error('Nothing generated yet for this job');
+    const index = Number(req.params.index);
+    const group = job.result.groups[index];
+    if (!group) throw new Error(`No recipient at index ${index}`);
+
+    const audit = (job.result.dedupeAudit ?? []) as {
+      stage: string;
+      key: string;
+      action: string;
+      before: string[];
+      after: string;
+      sourceRows: number[];
+    }[];
+    const sourceRows = new Set(group.members.map((m) => m.sourceRow));
+
+    const row =
+      job.result.channel === 'lawyer-letter'
+        ? job.result.lawyerLetterRows[index]
+        : job.result.postcardRows[index];
+
+    res.json({
+      index,
+      row,
+      group: {
+        target: group.target,
+        neighbourhood: group.neighbourhood,
+        landUse: group.landUse,
+        tenure: group.tenure,
+        address: group.address,
+        fullAddress: group.fullAddress,
+        registeredProprietor: group.registeredProprietor,
+        mailingAddress: group.mailingAddress,
+        distinctOwnerNames: group.distinctOwnerNames,
+        notes: group.notes,
+      },
+      members: group.members.map((m) => ({
+        sourceRow: m.sourceRow,
+        ownerSlot: m.ownerSlot,
+        addressId: m.addressId,
+        propertyRaw: m.property.raw,
+        numbers: m.property.numbers.join(' / '),
+        street: m.property.street,
+        conservationArea: m.property.conservationArea ?? '',
+        postal: m.property.postal,
+        ownerNameRaw: m.ownerNameRaw,
+        ownerName: m.ownerName,
+        ownerAddress: m.ownerAddress,
+        isCorporate: m.isCorporate,
+        declaredOwnerCount: m.declaredOwnerCount ?? null,
+        gfaSqft: m.gfaSqft ?? null,
+        benchmarkPsf: m.benchmarkPsf ?? null,
+        notes: m.notes,
+      })),
+      merges: audit
+        .filter((a) => a.sourceRows.some((r) => sourceRows.has(r)))
+        .map((a) => ({ stage: a.stage, action: a.action, before: a.before, after: a.after })),
+      flags: job.result.flags.filter((f) => {
+        const rows = String(f.sourceRow).split(',').map((r) => Number(r.trim()));
+        return rows.some((r) => sourceRows.has(r));
+      }),
+      crossCheck:
+        job.crossCheck?.result.findings.filter((f) => f.row === index + 2) ?? [],
+      bizfile:
+        job.bizfile?.verifications.filter(
+          (v) => normKeyLite(v.ownerName) === normKeyLite(group.registeredProprietor),
+        ) ?? [],
+    });
+  } catch (error) {
+    fail(res, error);
+  }
+});
+
+/** GET /api/jobs/:id/audit — every merge decision the dedupe engine took. */
+router.get('/jobs/:id/audit', (req, res) => {
+  try {
+    const job = requireJob(String(req.params.id));
+    if (!job.result) throw new Error('Nothing generated yet for this job');
+    const audit = (job.result.dedupeAudit ?? []) as unknown[];
+    res.json({ total: audit.length, rows: audit.slice(0, 1000) });
+  } catch (error) {
+    fail(res, error);
+  }
+});
+
 /** GET /api/jobs/:id/bizfile/queue — corporate owners awaiting verification. */
 router.get('/jobs/:id/bizfile/queue', (req, res) => {
   try {
@@ -490,4 +627,11 @@ function summarise(values: string[]): { label: string; count: number }[] {
 function numberOr(value: unknown, fallback: number): number {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+/** Loose key for matching an owner name across the BizFile results. */
+function normKeyLite(value: string): string {
+  return String(value ?? '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
 }

@@ -1,0 +1,177 @@
+import { useEffect, useState } from 'react';
+import { api, type SheetPreview } from '../api.js';
+import type { JobState } from '../useJob.js';
+import { Card, DataGrid, DropZone, Field, Msg, Spinner, StatTile } from '../ui.jsx';
+
+export function UploadView({ state, onNext }: { state: JobState; onNext: () => void }) {
+  const { job, busy, guard, setJob, reset } = state;
+  const [preview, setPreview] = useState<SheetPreview | null>(null);
+
+  async function loadPreview(id: string, sheet: string) {
+    const p = await guard('Sheet preview', () => api.sheetPreview(id, sheet));
+    if (p) setPreview(p);
+  }
+
+  // Pick the sheet that looks like the Main Database as soon as a job appears.
+  useEffect(() => {
+    if (!job || preview) return;
+    const guess =
+      job.sheetName ??
+      job.sheetNames.find((n) => /main\s*database/i.test(n)) ??
+      job.sheetNames[0];
+    if (guess) void loadPreview(job.id, guess);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?.id]);
+
+  async function onFile(file: File) {
+    const summary = await guard('Upload', () => api.upload(file), `Loaded ${file.name}`);
+    if (!summary) return;
+    setPreview(null);
+    setJob(summary);
+  }
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1>Upload the Main Database</h1>
+          <p className="lede">
+            Drop the PropCo Dealflow Tracker, or any export with the major columns. The file you
+            upload is never modified — each run writes a new workbook holding your original sheet
+            verbatim plus the generated subsheets.
+          </p>
+        </div>
+        {job ? (
+          <button className="ghost" onClick={reset}>
+            Start over
+          </button>
+        ) : null}
+      </div>
+
+      {!job ? (
+        <Card>
+          <DropZone
+            onFile={onFile}
+            accept=".xlsx,.xlsm,.xls,.csv"
+            label={busy === 'Upload' ? 'Reading workbook…' : 'Drop the workbook here'}
+            hint="Excel or CSV, up to 80 MB. Stays on this machine."
+          />
+        </Card>
+      ) : (
+        <>
+          <Card
+            title={job.sourceFileName}
+            aside={
+              <span className="muted" style={{ fontSize: 12.5 }}>
+                {job.sheetNames.length} sheets
+              </span>
+            }
+          >
+            {job.compsRows > 0 ? (
+              <Msg kind="ok">
+                Comps benchmark auto-loaded — <b>{job.compsRows} rows</b> from {job.compsSource}.
+              </Msg>
+            ) : (
+              <Msg kind="warn">
+                No comps benchmark sheet found in this file. Indicative prices will be derived from
+                GFA × psf, or left blank. You can upload a comps table on the next step.
+              </Msg>
+            )}
+
+            <div className="grid" style={{ marginTop: 14 }}>
+              <Field label="Sheet to read" hint="The sheet holding the owner rows.">
+                <select
+                  value={preview?.sheetName ?? ''}
+                  onChange={(e) => void loadPreview(job.id, e.target.value)}
+                >
+                  {job.sheetNames.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Replace the upload">
+                <input
+                  type="file"
+                  accept=".xlsx,.xlsm,.xls,.csv"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) void onFile(file);
+                  }}
+                />
+              </Field>
+            </div>
+          </Card>
+
+          {busy === 'Sheet preview' ? (
+            <Card>
+              <p className="hint">
+                <Spinner /> Reading the sheet…
+              </p>
+            </Card>
+          ) : null}
+
+          {preview ? (
+            <>
+              <Card title={`Sheet check — ${preview.sheetName}`}>
+                <div className="stats">
+                  <StatTile label="Data rows" value={preview.parsedRows} accent />
+                  <StatTile label="Columns" value={preview.headers.length} />
+                  <StatTile label="Fields mapped" value={preview.mappedFields.length} />
+                  <StatTile
+                    label="Fields absent"
+                    value={preview.missingFields.length}
+                    detail={preview.missingFields.length ? 'optional' : 'all present'}
+                  />
+                </div>
+
+                {preview.parsedRows === 0 ? (
+                  <Msg kind="err">
+                    No data rows found in this sheet. Pick a different one — the tracker keeps the
+                    owner rows on <b>Main Database</b>.
+                  </Msg>
+                ) : null}
+
+                {preview.missingFields.length ? (
+                  <Msg kind="info">
+                    Not present in this sheet: <b>{preview.missingFields.join(', ')}</b>. These are
+                    optional — anything that depends on them is skipped rather than guessed.
+                  </Msg>
+                ) : null}
+
+                {preview.unmappedHeaders.length ? (
+                  <p className="hint">
+                    Columns carried through but not used by the pipeline:{' '}
+                    {preview.unmappedHeaders.join(', ')}
+                  </p>
+                ) : null}
+              </Card>
+
+              <Card title="First rows" hint="A sanity check that the header row was detected correctly.">
+                <DataGrid
+                  rows={preview.sampleRows.map((cells) => {
+                    const obj: Record<string, unknown> = {};
+                    preview.headers.forEach((h, i) => {
+                      if (h) obj[h] = cells[i];
+                    });
+                    return obj;
+                  })}
+                  columns={preview.headers.filter(Boolean).slice(0, 12)}
+                  max={5}
+                  searchPlaceholder="Search the sample…"
+                />
+              </Card>
+
+              <div className="actions">
+                <button onClick={onNext} disabled={preview.parsedRows === 0}>
+                  Configure the run →
+                </button>
+              </div>
+            </>
+          ) : null}
+        </>
+      )}
+    </>
+  );
+}
