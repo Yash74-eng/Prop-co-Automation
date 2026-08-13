@@ -1,0 +1,16 @@
+node_modules/
+dist/
+web/dist/
+web/node_modules/
+.env
+.env.local
+
+# Runtime job data — uploaded workbooks and generated outputs stay local.
+# These contain confidential Figment owner/deal data. Never commit.
+storage/
+*.log
+
+# Runtime config lists (institutions to avoid, developers, neighbourhood overrides).
+# Internal competitive intelligence — the .example.json templates are committed instead.
+config/*.json
+!config/*.example.json

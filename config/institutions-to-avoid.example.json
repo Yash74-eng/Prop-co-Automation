@@ -1,0 +1,11 @@
+[
+  {
+    "name": "EXAMPLE COMPETITOR PTE. LTD.",
+    "status": "Competitor",
+    "remarks": "Why this entity is on the list"
+  },
+  {
+    "name": "EXAMPLE INSTITUTION LIMITED",
+    "status": "Institution"
+  }
+]
