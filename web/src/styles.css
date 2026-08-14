@@ -282,9 +282,16 @@ td.idx { color: var(--muted); font-variant-numeric: tabular-nums; }
   display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
   border: 1px solid var(--line-strong); color: var(--ink-soft); white-space: nowrap;
 }
-.pill.error, .pill.mismatch, .pill.entity-inactive, .pill.not-found {
+.pill.error, .pill.mismatch, .pill.entity-inactive, .pill.not-found, .pill.lookup-failed {
   border-color: var(--err); color: var(--err); background: var(--err-soft);
 }
+
+/* Template download links sit beside the upload they explain. */
+.template-link {
+  display: inline-block; font-size: 12.5px; color: var(--accent);
+  text-decoration: none; border-bottom: 1px dotted currentColor; padding-bottom: 1px;
+}
+.template-link:hover { border-bottom-style: solid; }
 .pill.warn, .pill.warning, .pill.inconclusive {
   border-color: var(--warn); color: var(--warn); background: var(--warn-soft);
 }

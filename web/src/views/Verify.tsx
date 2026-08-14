@@ -1,7 +1,18 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import type { JobState } from '../useJob.js';
-import { Card, DataGrid, Empty, Field, Msg, Pill, Spinner, StatTile, SummaryList } from '../ui.jsx';
+import {
+  Card,
+  DataGrid,
+  Empty,
+  Field,
+  Msg,
+  Pill,
+  Spinner,
+  StatTile,
+  SummaryList,
+  TemplateLink,
+} from '../ui.jsx';
 
 export function VerifyView({ state }: { state: JobState }) {
   const { job, health, busy, guard, setJob } = state;
@@ -9,6 +20,14 @@ export function VerifyView({ state }: { state: JobState }) {
   const [bizfileRows, setBizfileRows] = useState<Record<string, unknown>[]>([]);
   const [findings, setFindings] = useState<Record<string, unknown>[]>([]);
   const [bizfileFile, setBizfileFile] = useState<File | null>(null);
+  const [rerunFile, setRerunFile] = useState<File | null>(null);
+  const [rerun, setRerun] = useState<{
+    offered: number;
+    applied: number;
+    skippedIncomplete: number;
+    recipientsBefore: number;
+    recipientsAfter: number;
+  } | null>(null);
 
   const jobId = job?.id;
   useEffect(() => {
@@ -21,6 +40,7 @@ export function VerifyView({ state }: { state: JobState }) {
   }
 
   const severities = job.crossCheck?.severities ?? {};
+  const run = job.bizfileRun;
 
   return (
     <>
@@ -68,41 +88,78 @@ export function VerifyView({ state }: { state: JobState }) {
         <div className="grid">
           <Field
             label="BizFile export"
-            hint="Excel or CSV. Leave empty to try the live lookup instead."
+            hint="Excel or CSV. Leave empty to look up ACRA open data instead."
           >
             <input
               type="file"
               accept=".xlsx,.xls,.csv"
               onChange={(e) => setBizfileFile(e.target.files?.[0] ?? null)}
             />
+            <div style={{ marginTop: 8 }}>
+              <TemplateLink kind="bizfile" label="BizFile export template" />
+            </div>
           </Field>
         </div>
 
         {!health?.bizfileEnabled && !bizfileFile ? (
           <Msg kind="info">
-            Live scraping is disabled on this machine. Upload an export, or install Playwright and
-            set <code>BIZFILE_ENABLED=1</code> in <code>.env</code> to enable it. BizFile is a
-            JavaScript app behind a WAF, so the live path is best-effort and rate-limited.
+            The live lookup is disabled on this machine. Upload an export, or set{' '}
+            <code>BIZFILE_ENABLED=1</code> in <code>.env</code> to use ACRA's open data.
+          </Msg>
+        ) : null}
+
+        {run?.running ? (
+          <Msg kind="info">
+            <b>
+              Checking {run.done.toLocaleString('en-SG')} of {run.total.toLocaleString('en-SG')}
+            </b>{' '}
+            against {run.resolver}. This runs on the server and takes a few minutes for a full
+            queue — you can leave this page and come back.
+            {run.current ? (
+              <>
+                <br />
+                <span className="muted">now: {run.current}</span>
+              </>
+            ) : null}
+          </Msg>
+        ) : null}
+
+        {run?.error ? (
+          <Msg kind="err">
+            <b>Verification did not complete, and nothing was written.</b>
+            <br />
+            {run.error}
+          </Msg>
+        ) : null}
+
+        {job.bizfile?.verdicts['lookup-failed'] ? (
+          <Msg kind="warn">
+            <b>{job.bizfile.verdicts['lookup-failed']} owners could not be checked</b> — those rows
+            read <code>lookup-failed</code>, not <code>not-found</code>. Re-run to retry just those,
+            or raise <code>BIZFILE_DELAY_MS</code> if ACRA is throttling.
           </Msg>
         ) : null}
 
         <div className="actions">
           <button
-            disabled={!!busy || !queue?.total}
+            disabled={!!busy || !queue?.total || run?.running}
             onClick={() =>
-              void guard(
-                'BizFile verification',
-                () => api.bizfile(job.id, bizfileFile ?? undefined),
-                'BizFile verification complete',
+              void guard('BizFile verification', () =>
+                api.bizfile(job.id, bizfileFile ?? undefined),
               ).then((r) => {
+                // The server answers 202 and keeps working; useJob polls from here.
                 if (!r) return;
                 setJob(r);
-                setBizfileRows(r.rows);
+                setBizfileRows(r.rows ?? []);
               })
             }
           >
-            {busy === 'BizFile verification' ? <Spinner /> : null}
-            {bizfileFile ? 'Verify against upload' : 'Run live lookup'}
+            {busy === 'BizFile verification' || run?.running ? <Spinner /> : null}
+            {run?.running
+              ? `Checking ${run.done} / ${run.total}…`
+              : bizfileFile
+                ? 'Verify against upload'
+                : 'Run live lookup'}
           </button>
           {!queue?.total ? (
             <span className="muted" style={{ fontSize: 13 }}>
@@ -129,6 +186,100 @@ export function VerifyView({ state }: { state: JobState }) {
           </div>
         ) : null}
       </Card>
+
+      {/* ------------------------------------------- re-run with corrected addresses */}
+      {job.bizfile ? (
+        <Card
+          title="Rebuild with corrected addresses"
+          hint={
+            <>
+              A wrong mailing address cannot be patched into the finished sheet — merging keys
+              on the address, so correcting one can split or join recipients. This applies the
+              corrections and runs the whole pipeline again from the source.
+            </>
+          }
+        >
+          <div className="stats" style={{ marginBottom: 14 }}>
+            <StatTile
+              label="Addresses ACRA disputes"
+              value={job.bizfile.verdicts['mismatch'] ?? 0}
+              detail="verdict: mismatch"
+              accent
+            />
+            <StatTile
+              label="Confirmed, left alone"
+              value={
+                (job.bizfile.verdicts['match'] ?? 0) + (job.bizfile.verdicts['match-building'] ?? 0)
+              }
+              detail="no change needed"
+            />
+          </div>
+
+          <Msg kind="warn">
+            ACRA's open data carries <b>street and postal code only</b> — no block number. A
+            correction without a block number is <b>rejected automatically</b>, because replacing
+            "58 Sungei Kadut Street 1 … 729361" with "Temasek Boulevard … 038988" would produce a
+            letter that cannot be delivered. For full addresses, upload a purchased Business
+            Profile export below; it takes priority over the open-data record.
+          </Msg>
+
+          <div className="grid">
+            <Field
+              label="Updated BizFile export (optional)"
+              hint="Overrides the stored verification. Same columns as the export template."
+            >
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={(e) => setRerunFile(e.target.files?.[0] ?? null)}
+              />
+              <div style={{ marginTop: 8 }}>
+                <TemplateLink kind="bizfile" label="BizFile export template" />
+              </div>
+            </Field>
+          </div>
+
+          {rerun ? (
+            <Msg kind="ok">
+              <b>
+                {rerun.applied} rows updated from {rerun.offered} corrections.
+              </b>{' '}
+              Recipients went from {rerun.recipientsBefore.toLocaleString('en-SG')} to{' '}
+              {rerun.recipientsAfter.toLocaleString('en-SG')} — merging changes when an address
+              does. The rebuilt workbook has an <b>Address Overrides</b> sheet listing every
+              change.
+              {rerun.skippedIncomplete ? (
+                <>
+                  <br />
+                  {rerun.skippedIncomplete} corrections were rejected for having no block number.
+                </>
+              ) : null}
+            </Msg>
+          ) : null}
+
+          <div className="actions">
+            <button
+              disabled={!!busy || !(job.bizfile.verdicts['mismatch'] ?? 0) && !rerunFile}
+              onClick={() =>
+                void guard(
+                  'Rebuild',
+                  () => api.rerunAddresses(job.id, { file: rerunFile ?? undefined }),
+                  'Rebuilt with corrected addresses',
+                ).then((r) => {
+                  if (!r) return;
+                  setJob(r);
+                  setRerun(r);
+                })
+              }
+            >
+              {busy === 'Rebuild' ? <Spinner /> : null} Apply corrections and rebuild
+            </button>
+            <a className="button secondary" href={api.downloadUrl(job.id)} download>
+              Download workbook
+            </a>
+          </div>
+        </Card>
+      ) : null}
 
       {/* ------------------------------------------------------------- Claude */}
       <Card

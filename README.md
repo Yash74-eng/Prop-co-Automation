@@ -51,8 +51,29 @@ Five steps down the left, each unlocked by the one before it.
 | **1 · Upload** | Drop the workbook. It picks the Main Database sheet, shows how many rows parsed and which fields mapped, and previews the first rows so you can confirm the header row was read correctly. |
 | **2 · Configure** | Channel, mail date, outreach filter, and the exclusion/dedupe thresholds. Optional comps-benchmark override and suppression list. Every setting says what it does and what happens if you change it. |
 | **3 · Review** | Recipient count and the generated rows in a searchable, sortable grid. **Click any row** to open a drill-down showing the source rows that merged into it, the exact merge decisions taken, and every flag against it. A *Where rows went* tab shows the funnel — 6,672 source rows down to 1,452 recipients, with the drop at each stage and the reasons behind it. |
-| **4 · Verify** | Run the BizFile check and the Claude cross-check. Findings appear in-app and are appended to the workbook. |
+| **4 · Verify** | Run the BizFile check and the Claude cross-check. Findings appear in-app and are appended to the workbook, along with a **BizFile Coverage** sheet stating how much of the queue was actually answered. Corrected addresses can be applied here, which **re-runs the whole pipeline** — see below. |
 | **5 · Mail merge** | Validate a `.docx` against the generated headers and copy the command that exports the PDFs. |
+
+Every step that accepts an upload offers a **template** with the exact column names and a
+worked example — the Main Database itself, the comps benchmarks, the do-not-contact list,
+a BizFile export, and the mail-merge field reference. The finished workbook downloads
+automatically when a run completes; turn that off in Configure if you would rather not.
+
+### Correcting an address re-runs everything
+
+A wrong mailing address cannot be patched into the finished sheet. Dedupe and merging key
+on the address, so correcting one can split or join recipients — in testing, applying 5
+corrections moved the recipient count and changed which properties merged. So the
+**Rebuild with corrected addresses** panel feeds the corrections in *before* dedupe and
+runs the pipeline again from the original source, writing an **Address Overrides** sheet
+that lists every before-and-after.
+
+Corrections come from the last BizFile run, from an uploaded export, or both, with the
+upload taking priority. One safeguard matters: ACRA open data carries street and postal
+code but **no block number**, so a correction without one is rejected rather than applied —
+replacing `58 Sungei Kadut Street 1 … 729361` with `Temasek Boulevard … 038988` would
+produce an undeliverable letter. Upload a purchased Business Profile export for full
+addresses, or pass `allowIncomplete=true` to override that judgement.
 
 The job survives a page reload, there is a dark mode, and a pre-send checklist sits on the
 last step.
@@ -124,7 +145,8 @@ merge blank.
 
 **Audit subsheets** (on by default, switch off with `--no-audit`):
 `Source (Original)`, `Owner Rows (Exploded)`, `Dedupe Audit`, `Excluded`, `Review Flags`,
-`Comps Benchmark Used`, `Run Summary`, plus `BizFile Verification` and
+`Comps Benchmark Used`, `Run Summary`, plus `BizFile Verification`, `BizFile Coverage`,
+`Address Overrides` and
 `Claude Cross-Check` once those steps run.
 
 ---
@@ -253,17 +275,98 @@ address in the sheet. Verdicts: `match`, `match-building` (same postal code, dif
 unit), `mismatch`, `entity-inactive` (struck off / dissolved — do not send),
 `inconclusive`, `not-found`.
 
-Two resolvers, both user-triggered:
+### Use the open data, not the website
 
-1. **Upload a BizFile export** (recommended). Search the names on
-   [bizfile.gov.sg](https://www.bizfile.gov.sg/buy-info/search/results) and upload the
-   result — columns like `Entity Name`, `UEN`, `Registered Office Address` are picked up
-   automatically.
-2. **Live lookup** via headless Chromium. Off by default. BizFile is a JavaScript app
-   behind a WAF, so this is best-effort and rate-limited:
+ACRA publishes the whole registry as open data, which is the same source BizFile's search
+reads and needs no scraping at all:
+
+- Dataset `d_3f960c10fed6145404ca7b821f263b87` — *Entities Registered with ACRA*, 2.1M
+  rows, refreshed monthly, **Open Data Licence: free for commercial use**.
+- Fields: `uen`, `entity_name`, `uen_status_desc`, `entity_type_desc`, `uen_issue_date`,
+  `reg_street_name`, `reg_postal_code`.
+- Query endpoint: `https://data.gov.sg/api/action/datastore_search?resource_id=…`
+
+This is the default (`BIZFILE_DRIVER=opendata`). No login, no reCAPTCHA, no per-lookup
+fee, and the whole queue runs in one pass.
+
+Two things to know about it:
+
+1. **Street name and postal code only** — no block number, no unit. A full-string address
+   match therefore never fires; verdicts land on `match-building` (postal code agrees) or
+   `mismatch`. That is the right signal for posting a letter, and `verifyAddress` already
+   treats postal code as decisive. Don't read the absence of `match` as a failure.
+2. **It throttles.** Bursts of distinct queries get HTTP 429. Lookups retry with backoff,
+   repeated owner names are cached, and a lookup that ultimately fails is recorded as
+   `lookup-failed` — never as `not-found`. If more than a quarter of a batch fails, the run
+   aborts and writes nothing, because a sheet full of blanks reads like "ACRA has no record".
+
+Measured on a real 60-owner sample from the tracker (13 Aug 2026):
+
+| Verdict | Count | Share |
+|---|---|---|
+| `match-building` | 30 | 50.0% |
+| `mismatch` | 22 | 36.7% |
+| `lookup-failed` | 6 | 10.0% |
+| `entity-inactive` | 1 | 1.7% |
+| `not-found` | 1 | 1.7% |
+
+**88.3% resolved against ACRA.** Throughput is the weak point: ~5s per owner because of
+the throttle spacing and retries, so a 754-owner queue takes about an hour and leaves
+roughly a tenth unchecked. For a full queue, download the dataset CSV once and match
+locally instead — same data, no throttle, seconds rather than an hour.
+
+Because a full run outlasts any browser request, the endpoint returns **202** immediately
+and the UI polls `job.bizfileRun` for progress. Leaving the page does not cancel it.
+
+### Can bizfile.gov.sg itself be scraped? Largely no — measured 13 Aug 2026
+
+Two defences on `bizfile.gov.sg` were confirmed against the live site:
+
+| Approach | Result |
+|---|---|
+| Headless Chrome (Selenium or Playwright) | **403** — `The request could not be satisfied`, a CloudFront block before the app renders. |
+| Visible Chrome, driven by Selenium | Page renders and the search submits, but the backend returns **zero results**. `DBS BANK` — a live ACRA entity, default filters — reports "No matching results found". The endpoint is reCAPTCHA-gated. |
+
+The second failure mode is the dangerous one: it fails by returning *nothing* rather than
+by erroring, so an unguarded batch would stamp every corporate owner `not-found` — which
+on the audit sheet is indistinguishable from "ACRA has no record of this company".
+
+So the live resolver **runs a canary first** (`DBS BANK`). If the control search comes
+back empty, the run aborts with a `blocked` error and writes nothing. A refused report
+beats a confidently wrong one. Nothing here solves or circumvents a CAPTCHA; if the site
+challenges the session, the run stops.
+
+Also worth knowing: a registered office address is generally a **paid** Business Profile
+purchase on BizFile, not free-search data. Even past the gate, free results may only
+carry name / UEN / status. This is unconfirmed — no test search ever returned a result
+card to inspect.
+
+### The resolvers, in order of preference
+
+1. **ACRA open data** (`BIZFILE_DRIVER=opendata`, the default) — see above. Free,
+   licensed for commercial use, covers the whole queue.
+2. **Upload a BizFile export** — pass a `.xlsx`/`.csv` to the same endpoint. Use this when
+   you have purchased Business Profiles and want the full registered address including
+   block and unit, which the open dataset does not carry. Columns like `Entity Name`,
+   `UEN`, `Registered Office Address` are picked up automatically.
+3. **ACRA's subscription APIs** — for licensed, higher-assurance access with richer fields
+   (officers, shareholders, paid-up capital). See the
+   [ACRA API Marketplace](https://www.acra.gov.sg/resources/eservice-tools-portals/api-marketplace/).
+   Not wired into this repo; it needs a subscription first.
+4. **Live browser lookup** — attended, small-sample only, and currently gated (see below).
+   Capped at **10 lookups** per
+   run with a **30 s** timeout each, and it opens a *visible* window so a human at the
+   machine can see what happens:
    ```bash
-   npm i playwright && npx playwright install chromium
-   # then set BIZFILE_ENABLED=1 in .env
+   npm i selenium-webdriver     # a local Chrome is also required
+   # then in .env:
+   BIZFILE_ENABLED=1
+   BIZFILE_DRIVER=selenium      # or: playwright
+   BIZFILE_TIMEOUT_MS=30000
+   ```
+   To see the DOM for yourself when selectors drift:
+   ```bash
+   node scripts/bizfile-probe.mjs "SOME COMPANY PTE LTD"
    ```
 
 ---

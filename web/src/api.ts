@@ -15,6 +15,17 @@ export interface JobSummary {
   warnings: { scope: string; message: string; count?: number; samples?: string[] }[];
   channel: 'lawyer-letter' | 'postcard' | null;
   bizfile: { runAt: string; resolver: string; count: number; verdicts: Record<string, number> } | null;
+  /** Progress of an in-flight BizFile run; a full queue takes minutes. */
+  bizfileRun: {
+    total: number;
+    done: number;
+    current: string;
+    resolver: string;
+    startedAt: string;
+    finishedAt?: string;
+    error?: string;
+    running: boolean;
+  } | null;
   crossCheck: {
     runAt: string;
     rowsChecked: number;
@@ -174,6 +185,28 @@ export const api = {
     fetch(`/api/jobs/${id}/bizfile`, { method: 'POST', body: form({ file }) }).then(
       handle<JobSummary & { rows: Record<string, unknown>[] }>,
     ),
+
+  /** Re-run the whole pipeline with corrected addresses applied before dedupe. */
+  rerunAddresses: (id: string, opts: { file?: File; verdicts?: string[] } = {}) =>
+    fetch(`/api/jobs/${id}/rerun-addresses`, {
+      method: 'POST',
+      body: form({ file: opts.file, verdicts: opts.verdicts?.join(',') }),
+    }).then(
+      handle<
+        JobSummary & {
+          offered: number;
+          applied: number;
+          skippedIncomplete: number;
+          skippedSamples: { ownerName: string; address: string }[];
+          recipientsBefore: number;
+          recipientsAfter: number;
+          overrides: Record<string, unknown>[];
+        }
+      >,
+    ),
+
+  /** Starter workbook for one step. */
+  templateUrl: (kind: string) => `/api/templates/${kind}`,
 
   crossCheck: (id: string, body: Record<string, unknown>) =>
     fetch(`/api/jobs/${id}/cross-check`, json(body)).then(

@@ -147,6 +147,18 @@ export function Empty({ children }: { children: ReactNode }) {
   return <div className="empty">{children}</div>;
 }
 
+/**
+ * Download link for a starter workbook. Every step that accepts an upload offers one, so
+ * nobody has to guess the column names — the template carries the exact headers.
+ */
+export function TemplateLink({ kind, label }: { kind: string; label: string }) {
+  return (
+    <a className="template-link" href={`/api/templates/${kind}`} download>
+      ↓ {label}
+    </a>
+  );
+}
+
 export function Pill({ value }: { value: unknown }) {
   const text = String(value ?? '');
   return <span className={`pill ${text.toLowerCase().replace(/\s+/g, '-')}`}>{text}</span>;

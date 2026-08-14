@@ -1,11 +1,39 @@
 import { useEffect, useState } from 'react';
 import { api, type SheetPreview } from '../api.js';
 import type { JobState } from '../useJob.js';
-import { Card, DataGrid, DropZone, Field, Msg, Spinner, StatTile } from '../ui.jsx';
+import type { Channel, RunSettings } from './Configure.jsx';
+import { Card, DataGrid, DropZone, Field, Msg, Spinner, StatTile, TemplateLink } from '../ui.jsx';
 
-export function UploadView({ state, onNext }: { state: JobState; onNext: () => void }) {
+/** The two deliverables. Exactly one is built per run — never both. */
+const CHANNELS: { key: Channel; title: string; blurb: string }[] = [
+  {
+    key: 'lawyer-letter',
+    title: 'Lawyer letter',
+    blurb:
+      'One 22-column sheet with indicative pricing and two comparables per owner. Needs a comps benchmark table.',
+  },
+  {
+    key: 'postcard',
+    title: 'Postcard',
+    blurb:
+      'Two sheets — the working sheet plus a name-and-address sheet for the printer. No financials.',
+  },
+];
+
+export function UploadView({
+  state,
+  settings,
+  onChange,
+  onNext,
+}: {
+  state: JobState;
+  settings: RunSettings;
+  onChange: (next: RunSettings) => void;
+  onNext: () => void;
+}) {
   const { job, busy, guard, setJob, reset } = state;
   const [preview, setPreview] = useState<SheetPreview | null>(null);
+  const channel = settings.channel;
 
   async function loadPreview(id: string, sheet: string) {
     const p = await guard('Sheet preview', () => api.sheetPreview(id, sheet));
@@ -34,11 +62,11 @@ export function UploadView({ state, onNext }: { state: JobState; onNext: () => v
     <>
       <div className="page-head">
         <div>
-          <h1>Upload the Main Database</h1>
+          <h1>{channel ? 'Upload the Main Database' : 'What are you sending?'}</h1>
           <p className="lede">
-            Drop the PropCo Dealflow Tracker, or any export with the major columns. The file you
-            upload is never modified — each run writes a new workbook holding your original sheet
-            verbatim plus the generated subsheets.
+            {channel
+              ? 'Drop the PropCo Dealflow Tracker, or any export with the major columns. The file you upload is never modified — each run writes a new workbook holding your original sheet verbatim plus the generated subsheets.'
+              : 'Pick the deliverable first. Only the one you choose is built — the run never produces both, so the workbook you get out has no unused sheets to sift through.'}
           </p>
         </div>
         {job ? (
@@ -48,7 +76,41 @@ export function UploadView({ state, onNext }: { state: JobState; onNext: () => v
         ) : null}
       </div>
 
-      {!job ? (
+      <Card
+        title="Deliverable"
+        hint="This drives the columns, the sheets, and whether pricing is calculated."
+      >
+        <div className="grid">
+          {CHANNELS.map((c) => {
+            const on = channel === c.key;
+            return (
+              <button
+                key={c.key}
+                onClick={() => onChange({ ...settings, channel: c.key })}
+                className={on ? '' : 'ghost'}
+                style={{
+                  textAlign: 'left',
+                  display: 'block',
+                  padding: '14px 16px',
+                  height: 'auto',
+                  lineHeight: 1.5,
+                }}
+              >
+                <span style={{ display: 'block', fontWeight: 700, marginBottom: 4 }}>
+                  {on ? '● ' : '○ '}
+                  {c.title}
+                </span>
+                <span style={{ display: 'block', fontSize: 12.5, opacity: 0.8 }}>{c.blurb}</span>
+              </button>
+            );
+          })}
+        </div>
+        {channel ? null : (
+          <Msg kind="info">Choose one to continue. You can change it here later.</Msg>
+        )}
+      </Card>
+
+      {!channel ? null : !job ? (
         <Card>
           <DropZone
             onFile={onFile}
@@ -56,6 +118,10 @@ export function UploadView({ state, onNext }: { state: JobState; onNext: () => v
             label={busy === 'Upload' ? 'Reading workbook…' : 'Drop the workbook here'}
             hint="Excel or CSV, up to 80 MB. Stays on this machine."
           />
+          <p className="hint" style={{ marginTop: 12 }}>
+            No tracker to hand? <TemplateLink kind="main-database" label="Main Database template" />{' '}
+            — the exact column names, with two worked rows.
+          </p>
         </Card>
       ) : (
         <>
@@ -67,7 +133,11 @@ export function UploadView({ state, onNext }: { state: JobState; onNext: () => v
               </span>
             }
           >
-            {job.compsRows > 0 ? (
+            {channel === 'postcard' ? (
+              <Msg kind="info">
+                Postcards carry no pricing, so no comps benchmark is needed for this run.
+              </Msg>
+            ) : job.compsRows > 0 ? (
               <Msg kind="ok">
                 Comps benchmark auto-loaded — <b>{job.compsRows} rows</b> from {job.compsSource}.
               </Msg>

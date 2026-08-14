@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { api, type MergeCheck } from '../api.js';
 import type { JobState } from '../useJob.js';
-import { Card, Check, Empty, Field, Msg, Spinner, SummaryList } from '../ui.jsx';
+import { Card, Check, Empty, Field, Msg, Spinner, SummaryList, TemplateLink } from '../ui.jsx';
 
 export function MailMergeView({ state }: { state: JobState }) {
   const { job, busy, guard } = state;
@@ -37,6 +37,9 @@ export function MailMergeView({ state }: { state: JobState }) {
                 setResult(null);
               }}
             />
+            <div style={{ marginTop: 8 }}>
+              <TemplateLink kind="merge-fields" label="Merge field reference" />
+            </div>
           </Field>
         </div>
 

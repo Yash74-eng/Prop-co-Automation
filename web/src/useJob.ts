@@ -45,6 +45,20 @@ export function useJob(): JobState {
       .catch(() => localStorage.removeItem(STORAGE_KEY));
   }, []);
 
+  // A BizFile batch runs on the server for minutes after the request returns 202, so poll
+  // while one is in flight and stop as soon as it finishes.
+  const runningJobId = job?.bizfileRun?.running ? job.id : null;
+  useEffect(() => {
+    if (!runningJobId) return;
+    const timer = setInterval(() => {
+      api
+        .job(runningJobId)
+        .then(setJobState)
+        .catch(() => undefined);
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [runningJobId]);
+
   const guard = useCallback(
     async <T,>(label: string, fn: () => Promise<T>, successTitle?: string) => {
       setBusy(label);

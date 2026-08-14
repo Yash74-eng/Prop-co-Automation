@@ -28,16 +28,37 @@ import { findInstitutionsSheetName, loadConfig, parseInstitutionsSheet } from '.
 import { buildWorkbook, SHEET_NAMES, writeWorkbook } from '../excel/write.js';
 import { appendSheet } from '../excel/write.js';
 import {
+  ADDRESS_OVERRIDE_HEADERS,
+  BIZFILE_COVERAGE_HEADERS,
   BIZFILE_SHEET_HEADERS,
   collectCorporateOwners,
+  coverageRows,
   csvResolver,
   parseBizFileTable,
   playwrightResolver,
   verificationsToRows,
 } from '../bizfile/resolver.js';
+import {
+  BizFileBlockedError,
+  BizFileWindowClosedError,
+  defaultSeleniumOptions,
+  seleniumResolver,
+} from '../bizfile/selenium.js';
+import {
+  defaultOpenDataOptions,
+  openDataResolver,
+  OpenDataUnavailableError,
+} from '../bizfile/opendata.js';
 import { CLAUDE_SHEET_HEADERS, crossCheck, findingsToRows } from '../verify/claude.js';
 import { isCorporateName } from '../core/names.js';
-import { parseLooseDate, squash } from '../core/text.js';
+import { normKey, parseLooseDate, squash } from '../core/text.js';
+import {
+  buildTemplate,
+  isTemplateKind,
+  templateFileName,
+  templateKinds,
+} from '../excel/templates.js';
+import type { AddressOverride } from '../core/types.js';
 import { checkMergeFields, generateWordMergeScript } from '../mailmerge/wordMerge.js';
 import { writeFileSync } from 'node:fs';
 
@@ -244,6 +265,225 @@ router.post('/jobs/:id/run', async (req, res) => {
       exclusionSummary: summarise(result.exclusions.map((e) => e.reason)),
       flagSummary: summarise(result.flags.map((f) => `${f.severity}: ${f.flag}`)),
     });
+  } catch (error) {
+    fail(res, error);
+  }
+});
+
+/**
+ * POST /api/jobs/:id/rerun-addresses — re-run everything with corrected addresses.
+ *
+ * A wrong mailing address cannot be patched into the finished sheet: dedupe and merging
+ * key on the address, so correcting one can split or join recipients. The fix has to go in
+ * at the start, which is why this re-runs the whole pipeline rather than editing rows.
+ *
+ * Corrections come from the last BizFile run, from an uploaded export, or both.
+ */
+router.post('/jobs/:id/rerun-addresses', upload.single('file'), async (req, res) => {
+  try {
+    const job = requireJob(String(req.params.id));
+    if (!job.options || !job.result) throw new Error('Generate a sheet before re-running it');
+
+    const overrides: Record<string, AddressOverride> = {};
+    const skippedIncomplete: { ownerName: string; address: string }[] = [];
+    // ACRA's open data carries street name and postal code but no block number, so an
+    // override taken from it can replace a postable address with an unpostable one.
+    // Refuse those by default rather than quietly degrading the sheet.
+    const allowIncomplete = req.body?.allowIncomplete === 'true';
+    const hasBlockNumber = (address: string) => /^\s*\d/.test(address);
+
+    const add = (ownerName: string, address: string, source: string) => {
+      const name = squash(ownerName);
+      const value = squash(address);
+      if (!name || !value) return;
+      if (!hasBlockNumber(value) && !allowIncomplete) {
+        skippedIncomplete.push({ ownerName: name, address: value });
+        return;
+      }
+      overrides[normKey(name)] = { address: value, source, ownerName: name };
+    };
+
+    // Which verdicts to take ACRA's address for. Default is mismatch only: those are the
+    // rows where the sheet points at a different building entirely.
+    const wanted: string[] = Array.isArray(req.body?.verdicts)
+      ? req.body.verdicts
+      : squash(req.body?.verdicts)
+        ? String(req.body.verdicts).split(',').map((v) => v.trim())
+        : ['mismatch'];
+
+    if (req.body?.useBizfile !== 'false' && job.bizfile) {
+      for (const v of job.bizfile.verifications) {
+        if (!v.bizfileAddress || !wanted.includes(v.verdict)) continue;
+        add(v.ownerName, v.bizfileAddress, `BizFile verification (${v.verdict})`);
+      }
+    }
+
+    // An uploaded export wins over the stored verification — it is the newer statement,
+    // and a purchased Business Profile carries block and unit that open data does not.
+    if (req.file) {
+      const { wb, names } = readWorkbookSheets(req.file.path);
+      const table = sheetToTable(wb, squash(req.body?.sheetName) || names[0]);
+      const records = parseBizFileTable(table.headers, table.rows);
+      if (records.length === 0) {
+        throw new Error(
+          'No records found in the upload. Expected columns like "Entity Name" and "Registered Office Address".',
+        );
+      }
+      for (const r of records) {
+        if (!r.registeredAddress) continue;
+        add(r.name, r.registeredAddress, `upload (${req.file.originalname})`);
+      }
+    }
+
+    const count = Object.keys(overrides).length;
+    if (count === 0) {
+      if (skippedIncomplete.length > 0) {
+        throw new Error(
+          `All ${skippedIncomplete.length} corrections were rejected because they have no block number — ` +
+            'ACRA open data carries street and postal code only, so using them would replace postable ' +
+            'addresses with unpostable ones. Upload a purchased Business Profile export for the full ' +
+            'address, or re-send with allowIncomplete=true if you accept the risk.',
+        );
+      }
+      throw new Error(
+        'No corrected addresses to apply. Run the BizFile check first, or upload an export with a "Registered Office Address" column.',
+      );
+    }
+
+    const options = { ...job.options, ownerAddressOverrides: overrides };
+    const summary = await regenerate(job, options, [
+      `Re-run with ${count} corrected addresses applied before dedupe.`,
+    ]);
+
+    logStep(
+      job,
+      'rerun',
+      `${count} corrected addresses offered, ${summary.applied} rows changed -> ${summary.recipients} recipients`,
+    );
+
+    res.json({
+      ...jobSummary(job),
+      offered: count,
+      applied: summary.applied,
+      skippedIncomplete: skippedIncomplete.length,
+      skippedSamples: skippedIncomplete.slice(0, 10),
+      recipientsBefore: summary.before,
+      recipientsAfter: summary.recipients,
+      overrides: (job.result.appliedAddressOverrides ?? []).slice(0, 200),
+    });
+  } catch (error) {
+    fail(res, error);
+  }
+});
+
+/**
+ * Re-run the pipeline for a job with the given options and rewrite its workbook.
+ * Keeps the BizFile sheets attached, since they are still the evidence for the change.
+ */
+async function regenerate(
+  job: import('./store.js').Job,
+  options: import('../core/types.js').PipelineOptions,
+  extraNotes: string[],
+): Promise<{ applied: number; before: number; recipients: number }> {
+  const before =
+    job.result?.channel === 'lawyer-letter'
+      ? (job.result?.lawyerLetterRows.length ?? 0)
+      : (job.result?.postcardRows.length ?? 0);
+
+  const table = job.sourceTable ?? readSheet(job.sourcePath, job.sheetName || undefined);
+  const db = parseMainDatabase(table);
+  const config = loadConfig(readInstitutionsFromWorkbook(job.sourcePath));
+
+  const result = runPipeline(db.rows, options, {
+    institutions: config.institutions,
+    developerNames: config.developerNames,
+    neighbourhoodOverrides: config.neighbourhoodOverrides,
+  });
+  job.options = options;
+  job.result = result;
+
+  const wb = await buildWorkbook({
+    result,
+    source: table,
+    comps: job.comps,
+    notes: [
+      `Source: ${job.sourceFileName} [${table.sheetName}]`,
+      `Comps benchmark: ${job.compsSource}`,
+      ...extraNotes,
+      'The uploaded workbook was not modified.',
+    ],
+  });
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  const label = result.channel === 'lawyer-letter' ? 'Lawyer-Letter' : 'Postcard';
+  job.outputFileName = `PropCo ${label} ${stamp} ${job.id.slice(0, 8)}.xlsx`;
+  job.outputPath = join(OUTPUT_DIR, job.outputFileName);
+  await writeWorkbook(wb, job.outputPath);
+
+  const applied = result.appliedAddressOverrides ?? [];
+  if (applied.length > 0) {
+    await appendSheet(
+      job.outputPath,
+      SHEET_NAMES.addressOverrides,
+      ADDRESS_OVERRIDE_HEADERS,
+      applied.map((o) => [
+        o.ownerName,
+        o.sourceRow,
+        o.previousAddress,
+        o.newAddress,
+        o.source,
+      ]),
+    );
+  }
+  // Carry the verification evidence onto the new workbook.
+  if (job.bizfile) {
+    await appendSheet(
+      job.outputPath,
+      SHEET_NAMES.bizfile,
+      BIZFILE_SHEET_HEADERS,
+      verificationsToRows(job.bizfile.verifications),
+    );
+    await appendSheet(
+      job.outputPath,
+      SHEET_NAMES.bizfileCoverage,
+      BIZFILE_COVERAGE_HEADERS,
+      coverageRows(job.bizfile.verifications, {
+        resolver: job.bizfile.resolver,
+        runAt: job.bizfile.runAt,
+      }),
+    );
+  }
+
+  return {
+    applied: applied.length,
+    before,
+    recipients:
+      result.channel === 'lawyer-letter'
+        ? result.lawyerLetterRows.length
+        : result.postcardRows.length,
+  };
+}
+
+/**
+ * GET /api/templates/:kind — a starter workbook for one step, with the exact headers the
+ * matching upload expects plus a worked example.
+ */
+router.get('/templates/:kind', (req, res) => {
+  try {
+    const kind = String(req.params.kind);
+    if (!isTemplateKind(kind)) {
+      throw new Error(`Unknown template "${kind}". Available: ${templateKinds().join(', ')}`);
+    }
+    const buffer = buildTemplate(kind);
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${templateFileName(kind)}"`,
+    );
+    res.send(buffer);
   } catch (error) {
     fail(res, error);
   }
@@ -465,11 +705,20 @@ router.get('/jobs/:id/bizfile/queue', (req, res) => {
 router.post('/jobs/:id/bizfile', upload.single('file'), async (req, res) => {
   try {
     const job = requireJob(String(req.params.id));
+    if (job.bizfileRun && !job.bizfileRun.finishedAt) {
+      throw new Error(
+        `A BizFile run is already in progress (${job.bizfileRun.done} of ${job.bizfileRun.total}). Wait for it to finish.`,
+      );
+    }
     const queue = buildBizfileQueue(job);
     if (queue.length === 0) throw new Error('No corporate owners to verify in this run');
 
     let resolve: (q: typeof queue) => Promise<import('../bizfile/types.js').BizFileVerification[]>;
     let resolverName: string;
+    // Progress is reported into job.bizfileRun so a minutes-long batch stays visible.
+    const onProgress = (done: number, total: number, current: string) => {
+      if (job.bizfileRun) Object.assign(job.bizfileRun, { done, total, current });
+    };
 
     if (req.file) {
       const { wb, names } = readWorkbookSheets(req.file.path);
@@ -485,30 +734,107 @@ router.post('/jobs/:id/bizfile', upload.single('file'), async (req, res) => {
     } else {
       if (process.env.BIZFILE_ENABLED !== '1') {
         throw new Error(
-          'Live BizFile lookup is disabled. Either upload a BizFile export, or set BIZFILE_ENABLED=1 in .env after installing Playwright.',
+          'Live BizFile lookup is disabled. Either upload a BizFile export, or set BIZFILE_ENABLED=1 in .env.',
         );
       }
-      resolve = await playwrightResolver({
-        delayMs: numberOr(process.env.BIZFILE_DELAY_MS, 4000),
-        limit: numberOr(req.body?.limit, 100),
-      });
-      resolverName = 'bizfile.gov.sg (Playwright)';
+      const driver = process.env.BIZFILE_DRIVER ?? 'opendata';
+
+      // ACRA's open-data publication: same registry, no gate, whole queue in one run.
+      if (driver === 'opendata') {
+        resolve = await openDataResolver(
+          defaultOpenDataOptions({
+            limit: Math.min(numberOr(req.body?.limit, 1000), 5000),
+            timeoutMs: numberOr(process.env.BIZFILE_TIMEOUT_MS, 30_000),
+            delayMs: numberOr(process.env.BIZFILE_DELAY_MS, 400),
+            onProgress,
+          }),
+        );
+        resolverName = 'ACRA open data (data.gov.sg)';
+      } else {
+        // Browser scraping of bizfile.gov.sg is capped hard: it is rate-sensitive and
+        // reCAPTCHA-gated, so a run is a small sample to check against, not a bulk pull.
+        const limit = Math.min(numberOr(req.body?.limit, 10), 25);
+        const delayMs = numberOr(process.env.BIZFILE_DELAY_MS, 4000);
+
+        if (driver === 'playwright') {
+          resolve = await playwrightResolver({ delayMs, limit });
+          resolverName = 'bizfile.gov.sg (Playwright)';
+        } else {
+          resolve = await seleniumResolver(
+            defaultSeleniumOptions({
+              timeoutMs: numberOr(process.env.BIZFILE_TIMEOUT_MS, 30_000),
+              delayMs,
+              limit,
+              headful: process.env.BIZFILE_HEADFUL !== '0',
+            }),
+          );
+          resolverName = `bizfile.gov.sg (Selenium, ${limit} max)`;
+        }
+      }
     }
 
-    const verifications = await resolve(queue);
-    job.bizfile = { verifications, runAt: new Date(), resolver: resolverName };
+    // Verifying a full queue takes minutes — longer than a browser holds a request open.
+    // Start the work, hand back 202, and let the client poll job.bizfileRun.
+    job.bizfileRun = {
+      total: queue.length,
+      done: 0,
+      current: '',
+      resolver: resolverName,
+      startedAt: new Date(),
+    };
+    logStep(job, 'bizfile', `started: ${queue.length} owners via ${resolverName}`);
 
-    if (job.outputPath && existsSync(job.outputPath)) {
-      await appendSheet(
-        job.outputPath,
-        SHEET_NAMES.bizfile,
-        BIZFILE_SHEET_HEADERS,
-        verificationsToRows(verifications),
-      );
-    }
-    logStep(job, 'bizfile', `${verifications.length} owners verified via ${resolverName}`);
-    res.json({ ...jobSummary(job), rows: verifications.slice(0, 200) });
+    void (async () => {
+      try {
+        const verifications = await resolve(queue);
+        const runAt = new Date();
+        job.bizfile = { verifications, runAt, resolver: resolverName };
+        if (job.outputPath && existsSync(job.outputPath)) {
+          await appendSheet(
+            job.outputPath,
+            SHEET_NAMES.bizfile,
+            BIZFILE_SHEET_HEADERS,
+            verificationsToRows(verifications),
+          );
+          // A separate sheet stating how much of the queue was actually answered, so the
+          // coverage number is not something you have to work out from the verdict list.
+          await appendSheet(
+            job.outputPath,
+            SHEET_NAMES.bizfileCoverage,
+            BIZFILE_COVERAGE_HEADERS,
+            coverageRows(verifications, {
+              resolver: resolverName,
+              runAt,
+              queueTotal: queue.length,
+            }),
+          );
+        }
+        logStep(job, 'bizfile', `${verifications.length} owners verified via ${resolverName}`);
+        if (job.bizfileRun) job.bizfileRun.finishedAt = new Date();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // Nothing is recorded on failure — a partial or gated run would write verdicts
+        // that read like real answers.
+        if (job.bizfileRun) {
+          job.bizfileRun.error = message;
+          job.bizfileRun.finishedAt = new Date();
+        }
+        logStep(job, 'bizfile', `failed: ${message}`);
+      }
+    })();
+
+    res.status(202).json(jobSummary(job));
   } catch (error) {
+    // A blocked scrape is not a normal failure: nothing is recorded, because a partial or
+    // gated run would write false "not-found" verdicts onto the audit sheet.
+    if (
+      error instanceof BizFileBlockedError ||
+      error instanceof BizFileWindowClosedError ||
+      error instanceof OpenDataUnavailableError
+    ) {
+      res.status(502).json({ error: error.message, blocked: true });
+      return;
+    }
     fail(res, error);
   }
 });

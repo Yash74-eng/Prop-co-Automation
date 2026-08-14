@@ -52,7 +52,8 @@ function Shell() {
 
   const enabled: Record<Step, boolean> = {
     upload: true,
-    configure: !!job,
+    // Configure needs both a workbook and an explicit channel choice from step 1.
+    configure: !!job && !!settings.channel,
     review: !!job?.hasResult,
     verify: !!job?.hasResult,
     merge: !!job?.hasResult,
@@ -91,8 +92,12 @@ function Shell() {
             {job.stats?.recipients !== undefined ? (
               <div>{job.stats.recipients.toLocaleString('en-SG')} recipients</div>
             ) : null}
-            {job.channel ? (
-              <div>{job.channel === 'lawyer-letter' ? 'Lawyer letter' : 'Postcard'}</div>
+            {(job.channel ?? settings.channel) ? (
+              <div>
+                {(job.channel ?? settings.channel) === 'lawyer-letter'
+                  ? 'Lawyer letter'
+                  : 'Postcard'}
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -124,7 +129,12 @@ function Shell() {
 
       <main className="main">
         {step === 'upload' ? (
-          <UploadView state={state} onNext={() => setStep('configure')} />
+          <UploadView
+            state={state}
+            settings={settings}
+            onChange={setSettings}
+            onNext={() => setStep('configure')}
+          />
         ) : null}
         {step === 'configure' ? (
           <ConfigureView

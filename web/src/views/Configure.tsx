@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { api } from '../api.js';
 import type { JobState } from '../useJob.js';
-import { Card, Check, Field, Msg, Spinner } from '../ui.jsx';
+import { Card, Check, Field, Msg, Spinner, TemplateLink } from '../ui.jsx';
 
 export type Channel = 'lawyer-letter' | 'postcard';
 
 export interface RunSettings {
-  channel: Channel;
+  /** Chosen on step 1 before anything is uploaded. null = not yet picked. */
+  channel: Channel | null;
   sheetName: string;
   mailDate: string;
   validityDays: number;
@@ -20,11 +21,13 @@ export interface RunSettings {
   groupByOwnerName: boolean;
   includeAuditSheets: boolean;
   deriveMissingPrices: boolean;
+  /** Save the finished workbook as soon as the run completes. */
+  autoDownload: boolean;
 }
 
 export function defaultSettings(sheetName = ''): RunSettings {
   return {
-    channel: 'lawyer-letter',
+    channel: null,
     sheetName,
     mailDate: new Date().toISOString().slice(0, 10),
     validityDays: 14,
@@ -38,6 +41,7 @@ export function defaultSettings(sheetName = ''): RunSettings {
     groupByOwnerName: false,
     includeAuditSheets: true,
     deriveMissingPrices: true,
+    autoDownload: true,
   };
 }
 
@@ -66,13 +70,29 @@ export function ConfigureView({
   const isLetter = settings.channel === 'lawyer-letter';
 
   async function run() {
+    if (!settings.channel) return;
     const result = await guard(
       'Generate',
-      () => api.run(current.id, { ...settings, sheetName: settings.sheetName || current.sheetName }),
+      () =>
+        api.run(current.id, {
+          ...settings,
+          channel: settings.channel as Channel,
+          sheetName: settings.sheetName || current.sheetName,
+        }),
       'Sheet generated',
     );
     if (!result) return;
     setJob(result);
+    // Hand the finished workbook straight to the browser, so the common case needs no
+    // second click. The file is still available from Review if this is switched off.
+    if (settings.autoDownload) {
+      const link = document.createElement('a');
+      link.href = api.downloadUrl(current.id);
+      link.download = result.outputFileName ?? '';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
     onRan();
   }
 
@@ -91,11 +111,18 @@ export function ConfigureView({
 
       <Card title="Deliverable">
         <div className="grid">
-          <Field label="Channel">
-            <select value={settings.channel} onChange={(e) => set('channel', e.target.value as Channel)}>
-              <option value="lawyer-letter">Lawyer letter — 22 columns, comps and pricing</option>
-              <option value="postcard">Postcard — two sheets, no financials</option>
-            </select>
+          <Field
+            label="Channel"
+            hint="Chosen on step 1. Only this deliverable is built — go back to Upload to switch."
+          >
+            <input
+              readOnly
+              value={
+                isLetter
+                  ? 'Lawyer letter — 22 columns, comps and pricing'
+                  : 'Postcard — two sheets, no financials'
+              }
+            />
           </Field>
           <Field label="Sheet to read">
             <select
@@ -229,6 +256,12 @@ export function ConfigureView({
                 : 'Exploded owner rows, merge decisions, exclusions, flags, comps used, run summary.'
             }
           />
+          <Check
+            checked={settings.autoDownload}
+            onChange={(v) => set('autoDownload', v)}
+            label="Save the workbook as soon as it is generated"
+            hint="Downloads without a second click. The file stays available on Review either way."
+          />
         </div>
       </Card>
 
@@ -259,6 +292,9 @@ export function ConfigureView({
             >
               {busy === 'Comps upload' ? <Spinner /> : null} Load comps table
             </button>
+            <div style={{ marginTop: 8 }}>
+              <TemplateLink kind="comps" label="Comps benchmark template" />
+            </div>
           </Field>
 
           <Field
@@ -289,6 +325,9 @@ export function ConfigureView({
             >
               {busy === 'Suppression upload' ? <Spinner /> : null} Load suppression list
             </button>
+            <div style={{ marginTop: 8 }}>
+              <TemplateLink kind="suppression" label="Do-not-contact template" />
+            </div>
           </Field>
         </div>
       </Card>

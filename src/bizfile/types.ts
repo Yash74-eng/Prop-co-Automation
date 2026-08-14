@@ -14,7 +14,7 @@ export interface BizFileRecord {
   registeredAddress?: string;
   status?: string;
   entityType?: string;
-  source: 'upload' | 'bizfile-scrape';
+  source: 'upload' | 'bizfile-scrape' | 'acra-opendata';
 }
 
 export type BizFileVerdict =
@@ -29,7 +29,12 @@ export type BizFileVerdict =
   /** Record found but nothing comparable in it. */
   | 'inconclusive'
   /** No BizFile record for this name. */
-  | 'not-found';
+  | 'not-found'
+  /**
+   * The lookup itself failed (throttled, timed out, network error). Distinct from
+   * `not-found` on purpose: "we could not check" must never read as "ACRA has no record".
+   */
+  | 'lookup-failed';
 
 export interface BizFileVerification {
   ownerName: string;

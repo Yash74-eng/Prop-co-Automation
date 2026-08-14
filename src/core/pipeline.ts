@@ -15,6 +15,7 @@
  * `flags`, so nothing disappears silently.
  */
 import {
+  AppliedAddressOverride,
   ExclusionRecord,
   LawyerLetterRow,
   OwnerRow,
@@ -175,6 +176,7 @@ export function runPipeline(
 
   // ---- Stage 3: explode owners ---------------------------------------------------
   const exploded: OwnerRow[] = [];
+  const appliedOverrides: AppliedAddressOverride[] = [];
   for (const row of afterSuppression) {
     const property = parseAddress(row.address);
     if (property.unparsed) {
@@ -242,6 +244,24 @@ export function runPipeline(
         });
       }
 
+      // A corrected address has to be applied here, before dedupe: merging keys on the
+      // mailing address, so patching the finished sheet would leave the groups wrong.
+      const originalAddress = squash(owner.address);
+      const override =
+        options.ownerAddressOverrides?.[normKey(cls.cleaned)] ??
+        options.ownerAddressOverrides?.[normKey(squash(owner.name))];
+      const effectiveAddress = override?.address ? squash(override.address) : originalAddress;
+      if (override?.address && normKey(effectiveAddress) !== normKey(originalAddress)) {
+        appliedOverrides.push({
+          ownerName: cls.cleaned,
+          sourceRow: String(row.sourceRow),
+          previousAddress: originalAddress,
+          newAddress: effectiveAddress,
+          source: override.source,
+        });
+        notes.push(`Mailing address replaced from ${override.source}`);
+      }
+
       exploded.push({
         sourceRow: row.sourceRow,
         ownerSlot: owner.slot,
@@ -251,8 +271,8 @@ export function runPipeline(
         tenure: row.tenure ?? '',
         ownerName: cls.cleaned,
         ownerNameRaw: squash(owner.name),
-        ownerAddress: squash(owner.address),
-        ownerAddressRaw: squash(owner.address),
+        ownerAddress: effectiveAddress,
+        ownerAddressRaw: originalAddress,
         property,
         gfaSqft: row.gfaSqft,
         benchmarkPsf: row.benchmarkPsf,
@@ -523,6 +543,7 @@ export function runPipeline(
     flags,
     warnings,
     stats,
+    appliedAddressOverrides: appliedOverrides,
     // Attached for the audit sheet writer.
     ...({ dedupeAudit: audit } as object),
   } as PipelineResult & { dedupeAudit: typeof audit };

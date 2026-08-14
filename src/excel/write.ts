@@ -23,6 +23,8 @@ export const SHEET_NAMES = {
   flags: 'Review Flags',
   comps: 'Comps Benchmark Used',
   bizfile: 'BizFile Verification',
+  bizfileCoverage: 'BizFile Coverage',
+  addressOverrides: 'Address Overrides',
   claude: 'Claude Cross-Check',
   runSummary: 'Run Summary',
 } as const;

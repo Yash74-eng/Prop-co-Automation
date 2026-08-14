@@ -17,7 +17,12 @@
  * Whichever resolver is used, the output is the same shape and lands on its own
  * "BizFile Verification" sheet with a match verdict per row.
  */
-import { CorporateOwnerQuery, BizFileRecord, BizFileVerification } from './types.js';
+import {
+  CorporateOwnerQuery,
+  BizFileRecord,
+  BizFileVerification,
+  BizFileVerdict,
+} from './types.js';
 import { mailingAddressKey } from '../core/address.js';
 import { normKey, squash, upper } from '../core/text.js';
 
@@ -92,7 +97,12 @@ export function verifyAddress(
     (a) => mailingAddressKey(a) === mailingAddressKey(record.registeredAddress ?? ''),
   );
 
-  if (record.status && /STRUCK|DISSOLV|CEASED|WOUND|CANCELLED/i.test(record.status)) {
+  // "Deregistered" is ACRA's own wording in the open-data feed and means inactive, so it
+  // has to be caught here too — otherwise a dead entity reads as mailable.
+  if (
+    record.status &&
+    /STRUCK|DISSOLV|CEASED|WOUND|CANCELLED|DEREGIST|EXPIRED|WITHDRAWN/i.test(record.status)
+  ) {
     return {
       ...base,
       verdict: 'entity-inactive',
@@ -280,6 +290,104 @@ export const BIZFILE_SHEET_HEADERS = [
   'BizFile Registered Address',
   'Verdict',
   'Detail',
+];
+
+export const BIZFILE_COVERAGE_HEADERS = ['Measure', 'Count', 'Share of owners', 'What it means'];
+
+/** DD MMM YYYY HH:mm, so the sheet reads as a timestamp rather than a serial number. */
+function formatDateTime(date: Date): string {
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(date.getDate())} ${months[date.getMonth()]} ${date.getFullYear()} ${pad(
+    date.getHours(),
+  )}:${pad(date.getMinutes())}`;
+}
+
+/**
+ * How much of the queue the verification actually managed to answer.
+ *
+ * This sheet exists because a verdict tally alone flatters the run: `not-found` and
+ * `lookup-failed` both leave an owner unchecked, but only one of them is a statement about
+ * ACRA. Anyone deciding whether to post from this workbook needs the coverage number, not
+ * just the list.
+ */
+export function coverageRows(
+  items: BizFileVerification[],
+  meta: { resolver: string; runAt: Date; queueTotal?: number },
+): unknown[][] {
+  const total = items.length;
+  const count = (...verdicts: BizFileVerdict[]) =>
+    items.filter((v) => verdicts.includes(v.verdict)).length;
+  const pct = (n: number) => (total > 0 ? `${((n / total) * 100).toFixed(1)}%` : '—');
+
+  const checked = count('match', 'match-building', 'mismatch', 'entity-inactive', 'inconclusive');
+  const notFound = count('not-found');
+  const failed = count('lookup-failed');
+  const usable = count('match', 'match-building');
+  const needsAction = count('mismatch', 'entity-inactive');
+
+  const queue = meta.queueTotal ?? total;
+  const rows: unknown[][] = [
+    [
+      'Corporate owners in the queue',
+      queue,
+      queue > 0 ? `${((total / queue) * 100).toFixed(1)}% verified` : '—',
+      'Every corporate owner in this run',
+    ],
+    [
+      'Owners verified in this run',
+      total,
+      '100.0%',
+      total < queue
+        ? 'A capped sample — the shares below are of this many, not the whole queue'
+        : 'The whole queue',
+    ],
+    ['Looked up successfully', checked, pct(checked), 'ACRA returned a record for these'],
+    [
+      'Address confirmed',
+      usable,
+      pct(usable),
+      'Exact match, or same postal code with a different unit — safe to post',
+    ],
+    [
+      'Needs a decision before posting',
+      needsAction,
+      pct(needsAction),
+      'Address differs, or the entity is struck off / deregistered',
+    ],
+    [
+      'No ACRA record found',
+      notFound,
+      pct(notFound),
+      'Searched, nothing matched — check the spelling on the sheet',
+    ],
+    [
+      'Could not be checked',
+      failed,
+      pct(failed),
+      'The lookup itself failed (throttled or unreachable). NOT a statement about ACRA — re-run these',
+    ],
+    [],
+    [
+      'Coverage',
+      `${pct(checked)} of the ${total} verified`,
+      '',
+      'Share ACRA actually answered for',
+    ],
+    ['Resolver', meta.resolver, '', 'Where the records came from'],
+    // Written as text: a Date here lands as a bare Excel serial number unless the column
+    // carries a date format, and this sheet is a mix of text and numbers.
+    ['Run at', formatDateTime(meta.runAt), '', ''],
+  ];
+  return rows;
+}
+
+export const ADDRESS_OVERRIDE_HEADERS = [
+  'Owner Name',
+  'Source Row',
+  'Address Before',
+  'Address After',
+  'Source',
 ];
 
 export function verificationsToRows(items: BizFileVerification[]): unknown[][] {

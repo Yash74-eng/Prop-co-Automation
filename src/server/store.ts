@@ -39,6 +39,20 @@ export interface Job {
   outputPath?: string;
   outputFileName?: string;
   bizfile?: { verifications: BizFileVerification[]; runAt: Date; resolver: string };
+  /**
+   * Progress of an in-flight BizFile run. A full queue takes minutes, which is far longer
+   * than a browser will hold a request open, so the route starts the work and returns; the
+   * UI polls this.
+   */
+  bizfileRun?: {
+    total: number;
+    done: number;
+    current: string;
+    resolver: string;
+    startedAt: Date;
+    finishedAt?: Date;
+    error?: string;
+  };
   crossCheck?: { result: CrossCheckResult; runAt: Date };
   log: { at: Date; step: string; message: string }[];
 }
@@ -103,6 +117,12 @@ export function jobSummary(job: Job) {
           resolver: job.bizfile.resolver,
           count: job.bizfile.verifications.length,
           verdicts: countBy(job.bizfile.verifications.map((v) => v.verdict)),
+        }
+      : null,
+    bizfileRun: job.bizfileRun
+      ? {
+          ...job.bizfileRun,
+          running: !job.bizfileRun.finishedAt,
         }
       : null,
     crossCheck: job.crossCheck

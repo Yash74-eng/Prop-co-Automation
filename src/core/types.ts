@@ -203,6 +203,31 @@ export interface PipelineOptions {
   derivedHigherMultiplier: number;
   /** Round derived prices to this increment. */
   derivedRounding: number;
+  /**
+   * Corrected mailing addresses, keyed by the normalised owner name. Used to re-run the
+   * whole pipeline after BizFile verification finds a wrong address — dedupe and merging
+   * depend on the address, so a corrected address has to go in at the start, not be
+   * patched into the finished sheet.
+   */
+  ownerAddressOverrides?: Record<string, AddressOverride>;
+}
+
+export interface AddressOverride {
+  /** The replacement mailing address. */
+  address: string;
+  /** Where it came from, for the audit sheet. */
+  source: string;
+  /** Owner name as supplied, for the audit sheet. */
+  ownerName: string;
+}
+
+/** One override actually applied during a run. */
+export interface AppliedAddressOverride {
+  ownerName: string;
+  sourceRow: string;
+  previousAddress: string;
+  newAddress: string;
+  source: string;
 }
 
 export interface SuppressionEntry {
@@ -265,4 +290,6 @@ export interface PipelineResult {
   flags: ReviewFlag[];
   warnings: PipelineWarning[];
   stats: Record<string, number>;
+  /** Corrected addresses that actually changed a row on this run. */
+  appliedAddressOverrides?: AppliedAddressOverride[];
 }

@@ -1,6 +1,6 @@
 /** Local web server: JSON API plus the built wizard UI. */
 import express from 'express';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { router } from './routes.js';
 import { pruneStorage, STORAGE_DIR } from './store.js';
@@ -89,8 +89,7 @@ app.listen(port(), () => {
 function loadEnv(): void {
   const path = resolve('.env');
   if (!existsSync(path)) return;
-  const fs = require('node:fs') as typeof import('node:fs');
-  for (const line of fs.readFileSync(path, 'utf8').split(/\r?\n/)) {
+  for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
     const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/i);
     if (!match) continue;
     const key = match[1];
