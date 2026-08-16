@@ -325,8 +325,9 @@ export function ConfigureView({
             >
               {busy === 'Suppression upload' ? <Spinner /> : null} Load suppression list
             </button>
-            <div style={{ marginTop: 8 }}>
+            <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
               <TemplateLink kind="suppression" label="Do-not-contact template" />
+              <TemplateLink kind="institutions" label="Institutions-to-avoid template" />
             </div>
           </Field>
         </div>

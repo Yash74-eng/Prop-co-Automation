@@ -37,8 +37,16 @@ export function MailMergeView({ state }: { state: JobState }) {
                 setResult(null);
               }}
             />
-            <div style={{ marginTop: 8 }}>
-              <TemplateLink kind="merge-fields" label="Merge field reference" />
+            <div
+              style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}
+            >
+              <span className="hint" style={{ margin: 0 }}>
+                Start from a ready-made Word file — the merge fields are already in place:
+              </span>
+              <TemplateLink kind="letter-docx" label="Lawyer letter template .docx" />
+              <TemplateLink kind="envelope-docx" label="Envelope template .docx" />
+              <TemplateLink kind="postcard-docx" label="Postcard template .docx" />
+              <TemplateLink kind="merge-fields" label="Merge field reference .xlsx" />
             </div>
           </Field>
         </div>

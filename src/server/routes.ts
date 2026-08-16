@@ -55,6 +55,7 @@ import { normKey, parseLooseDate, squash } from '../core/text.js';
 import {
   buildTemplate,
   isTemplateKind,
+  templateContentType,
   templateFileName,
   templateKinds,
 } from '../excel/templates.js';
@@ -468,17 +469,14 @@ async function regenerate(
  * GET /api/templates/:kind — a starter workbook for one step, with the exact headers the
  * matching upload expects plus a worked example.
  */
-router.get('/templates/:kind', (req, res) => {
+router.get('/templates/:kind', async (req, res) => {
   try {
     const kind = String(req.params.kind);
     if (!isTemplateKind(kind)) {
       throw new Error(`Unknown template "${kind}". Available: ${templateKinds().join(', ')}`);
     }
-    const buffer = buildTemplate(kind);
-    res.setHeader(
-      'Content-Type',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    );
+    const buffer = await buildTemplate(kind);
+    res.setHeader('Content-Type', templateContentType(kind));
     res.setHeader(
       'Content-Disposition',
       `attachment; filename="${templateFileName(kind)}"`,

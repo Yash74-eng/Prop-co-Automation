@@ -10,7 +10,23 @@
  */
 import * as XLSX from 'xlsx';
 
-export type TemplateKind = 'main-database' | 'comps' | 'suppression' | 'bizfile' | 'merge-fields';
+export type TemplateKind =
+  | 'main-database'
+  | 'comps'
+  | 'suppression'
+  | 'bizfile'
+  | 'institutions'
+  | 'merge-fields'
+  | 'letter-docx'
+  | 'envelope-docx'
+  | 'postcard-docx';
+
+/** Word templates are built as real .docx files, not spreadsheets. */
+const DOCX_KINDS = new Set<TemplateKind>(['letter-docx', 'envelope-docx', 'postcard-docx']);
+
+export function isDocxTemplate(kind: TemplateKind): boolean {
+  return DOCX_KINDS.has(kind);
+}
 
 interface Template {
   fileName: string;
@@ -20,9 +36,12 @@ interface Template {
   examples: unknown[][];
   /** Shown on a second sheet so the template explains itself. */
   notes: string[];
+  /** Further sheets appended verbatim, e.g. the postcard field list. */
+  extraSheets?: { name: string; rows: unknown[][] }[];
 }
 
-const TEMPLATES: Record<TemplateKind, Template> = {
+/** Spreadsheet templates only; the Word ones live in DOCX_TEMPLATES below. */
+const TEMPLATES: Record<string, Template> = {
   'main-database': {
     fileName: 'PropCo Template - Main Database.xlsx',
     sheetName: 'Main Database',
@@ -213,6 +232,26 @@ const TEMPLATES: Record<TemplateKind, Template> = {
     ],
   },
 
+  institutions: {
+    fileName: 'PropCo Template - Institutions to Avoid.xlsx',
+    // The sheet name is matched on /institution/ + /avoid/, so keep both words.
+    sheetName: 'Institutions to Avoid',
+    headers: ['Institutions', 'Status', 'Remarks'],
+    examples: [
+      ['HOUSING AND DEVELOPMENT BOARD', 'Statutory board', 'Never a private-treaty seller'],
+      ['SINGAPORE LAND AUTHORITY', 'Statutory board', ''],
+      ['EXAMPLE TEMPLE ASSOCIATION', 'Institution', 'Clan association — approach in person'],
+    ],
+    notes: [
+      'Owners matching these names are FLAGGED, not removed. The Comments column says so,',
+      '  and a human decides whether to write to them.',
+      'Put this sheet inside your tracker workbook and it is picked up automatically —',
+      '  the sheet name must contain both "institution" and "avoid".',
+      'Only the first column is required. Status defaults to "Institution" when blank.',
+      'Matching is on a normalised name, so punctuation and casing do not matter.',
+    ],
+  },
+
   'merge-fields': {
     fileName: 'PropCo Template - Mail Merge Fields.xlsx',
     sheetName: 'Merge Fields',
@@ -240,26 +279,144 @@ const TEMPLATES: Record<TemplateKind, Template> = {
       'In Word: Insert > Quick Parts > Field > MergeField, then type the name.',
       'Step 5 validates your .docx against the generated sheet and names any field that',
       '  will not resolve, before you produce hundreds of PDFs.',
-      'Postcards use a different, shorter set — Owner Name and Owner Address.',
+      'The second sheet lists the postcard fields, which are a different, shorter set.',
+      'Rather than build a document from scratch, download the ready-made Word templates:',
+      '  the letter, the envelope and the postcard all come with these fields already in.',
+    ],
+    extraSheets: [
+      {
+        name: 'Postcard Fields',
+        rows: [
+          ['Merge field', 'Example value', 'Notes'],
+          ['Owner Name', 'EXAMPLE HOLDINGS PTE. LTD.', 'Used as the PDF file name'],
+          ['Owner Address', '12 ANN SIANG ROAD #03-01 SINGAPORE 069692', 'Where it is posted'],
+          ['Full Address', '91 CIRCULAR ROAD SINGAPORE 049442', 'The property'],
+          ['Address', '91 CIRCULAR ROAD', 'Property address without the postal code'],
+          ['Neighbourhood', 'Boat Quay', ''],
+          ['Contact Name', '', 'Blank unless the tracker carries one'],
+          ['Contact Number', '', ''],
+          ['Updated Date', '01 Sep 2026', 'The mail date'],
+        ],
+      },
+    ],
+  },
+};
+
+/**
+ * Word templates, built as real .docx files with MERGEFIELD codes already placed.
+ *
+ * These exist because "here are the field names, now build a Word document" is the step
+ * most likely to go wrong: a field typed as plain text rather than inserted as a merge
+ * field looks identical on screen and merges as literal text. Starting from a document
+ * where the fields are already correct removes that whole class of mistake — and step 5
+ * validates whatever you upload anyway.
+ */
+interface DocxTemplate {
+  fileName: string;
+  title: string;
+  /** Paragraphs; `{{Field_Name}}` becomes a real MERGEFIELD. */
+  body: string[];
+}
+
+const DOCX_TEMPLATES: Record<string, DocxTemplate> = {
+  'letter-docx': {
+    fileName: 'PropCo Template - Lawyer Letter.docx',
+    title: 'Lawyer letter',
+    body: [
+      '[ YOUR FIRM LETTERHEAD ]',
+      '',
+      '{{Mail_Date}}',
+      '',
+      '{{Registered_Proprietor}}',
+      '{{Registered_Proprietor_mailing_address}}',
+      '',
+      'Dear Sir or Madam',
+      '',
+      'RE: {{Full_Address}}',
+      '',
+      'We act for a client who wishes to purchase the property at {{Full_Address}} in {{Neighbourhood}}.',
+      '',
+      'Our client is prepared to offer between S${{minimum_Price}} and S${{higher_Price}} for the property, subject to contract and to inspection.',
+      '',
+      'By way of reference, we note the following recent transactions in the immediate area:',
+      '',
+      '{{Comp_Address_1}} — S${{Comp_1}} on {{Comp_1_Date}}',
+      '{{Comp_Address_2}} — S${{Comp_2}} on {{Comp_2_Date}}',
+      '',
+      'This offer remains open until {{Valid_Date}}. Should you wish to discuss it, please contact the undersigned.',
+      '',
+      'Yours faithfully',
+      '',
+      '',
+      '[ NAME ]',
+      '[ FIRM ]',
+    ],
+  },
+  'envelope-docx': {
+    fileName: 'PropCo Template - Envelope.docx',
+    title: 'Envelope',
+    body: [
+      '[ RETURN ADDRESS ]',
+      '',
+      '',
+      '',
+      '',
+      '                    {{Registered_Proprietor}}',
+      '                    {{Registered_Proprietor_mailing_address}}',
+      '',
+      '',
+      '[ Set the page size to your envelope under Layout > Size before merging. ]',
+    ],
+  },
+  'postcard-docx': {
+    fileName: 'PropCo Template - Postcard.docx',
+    title: 'Postcard',
+    body: [
+      '[ POSTCARD FRONT — your artwork goes here ]',
+      '',
+      '',
+      '[ REVERSE ]',
+      '',
+      'Dear {{Owner Name}}',
+      '',
+      'We are interested in acquiring {{Full Address}} in {{Neighbourhood}} and would welcome a conversation, with no obligation.',
+      '',
+      '[ YOUR CONTACT DETAILS ]',
+      '',
+      '',
+      'Addressee:',
+      '{{Owner Name}}',
+      '{{Owner Address}}',
+      '',
+      '[ Set the page size to your postcard under Layout > Size before merging. ]',
     ],
   },
 };
 
 export function templateKinds(): TemplateKind[] {
-  return Object.keys(TEMPLATES) as TemplateKind[];
+  return [...(Object.keys(TEMPLATES) as TemplateKind[]), ...(Object.keys(DOCX_TEMPLATES) as TemplateKind[])];
 }
 
 export function isTemplateKind(value: string): value is TemplateKind {
-  return value in TEMPLATES;
+  return value in TEMPLATES || value in DOCX_TEMPLATES;
 }
 
 export function templateFileName(kind: TemplateKind): string {
-  return TEMPLATES[kind].fileName;
+  return isDocxTemplate(kind) ? DOCX_TEMPLATES[kind].fileName : TEMPLATES[kind].fileName;
 }
 
-/** Build the template as an xlsx buffer, ready to stream to the browser. */
-export function buildTemplate(kind: TemplateKind): Buffer {
-  const t = TEMPLATES[kind];
+export function templateContentType(kind: TemplateKind): string {
+  return isDocxTemplate(kind)
+    ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+}
+
+/** Build the template, as .docx for the Word ones and .xlsx for the rest. */
+export async function buildTemplate(kind: TemplateKind): Promise<Buffer> {
+  return isDocxTemplate(kind) ? buildDocx(DOCX_TEMPLATES[kind]) : buildXlsx(TEMPLATES[kind]);
+}
+
+function buildXlsx(t: Template): Buffer {
   const wb = XLSX.utils.book_new();
 
   XLSX.utils.book_append_sheet(
@@ -267,6 +424,9 @@ export function buildTemplate(kind: TemplateKind): Buffer {
     XLSX.utils.aoa_to_sheet([t.headers, ...t.examples]),
     t.sheetName,
   );
+  for (const extra of t.extraSheets ?? []) {
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(extra.rows), extra.name);
+  }
   XLSX.utils.book_append_sheet(
     wb,
     XLSX.utils.aoa_to_sheet([
@@ -280,4 +440,92 @@ export function buildTemplate(kind: TemplateKind): Buffer {
   );
 
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+}
+
+const xmlEscape = (s: string) =>
+  s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+/**
+ * One paragraph. `{{Field}}` segments become MERGEFIELD runs, which is what Word treats
+ * as a real merge field and what `listMergeFields` reads back out.
+ */
+function paragraph(text: string): string {
+  const runs: string[] = [];
+  const pattern = /\{\{([^}]+)\}\}/g;
+  let last = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > last) runs.push(textRun(text.slice(last, match.index)));
+    runs.push(mergeFieldRun(match[1].trim()));
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) runs.push(textRun(text.slice(last)));
+  if (runs.length === 0) runs.push(textRun(''));
+
+  return `<w:p><w:pPr><w:spacing w:after="120"/></w:pPr>${runs.join('')}</w:p>`;
+}
+
+function textRun(text: string): string {
+  return `<w:r><w:t xml:space="preserve">${xmlEscape(text)}</w:t></w:r>`;
+}
+
+/**
+ * A complete simple field, which Word shows as «Field_Name» and merges properly.
+ * The name is always quoted — Word requires it for names containing spaces, such as the
+ * postcard sheet's "Owner Name", and tolerates it for the rest.
+ */
+function mergeFieldRun(name: string): string {
+  return (
+    `<w:fldSimple w:instr=" MERGEFIELD &quot;${xmlEscape(name)}&quot; \\* MERGEFORMAT ">` +
+    `<w:r><w:t>«${xmlEscape(name)}»</w:t></w:r>` +
+    `</w:fldSimple>`
+  );
+}
+
+async function buildDocx(t: DocxTemplate): Promise<Buffer> {
+  const { default: JSZip } = await import('jszip');
+  const zip = new JSZip();
+
+  zip.file(
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`,
+  );
+
+  // Full paths, and createFolders:false below — a zero-length directory entry stops the
+  // reader in wordMerge.ts, which treats zero sizes as "sizes are in a data descriptor".
+  zip.file(
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`,
+  );
+
+  const body = t.body.map(paragraph).join('');
+  zip.file(
+    'word/document.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body>
+</w:document>`,
+  );
+
+  // Drop the implicit directory entries JSZip adds for "_rels/" and "word/". Word does
+  // not need them, and a zero-length entry is exactly the shape that trips naive zip
+  // readers — including this repo's own, until it was taught to skip them.
+  for (const path of Object.keys(zip.files)) {
+    if (zip.files[path].dir) delete zip.files[path];
+  }
+
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }

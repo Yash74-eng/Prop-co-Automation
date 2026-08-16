@@ -26,8 +26,14 @@ export function listMergeFields(docxPath: string): string[] {
   const names = new Set<string>();
 
   // Word writes fields two ways: as a w:instrText run, and as a w:fldSimple attribute.
-  for (const m of xml.matchAll(/MERGEFIELD\s+"?([A-Za-z0-9_]+)"?/g)) names.add(m[1]);
-  for (const m of xml.matchAll(/«([A-Za-z0-9_]+)»/g)) names.add(m[1]);
+  //
+  // Names containing spaces must be quoted in the instruction, and the postcard sheet is
+  // full of them ("Owner Name", "Full Address"). Match the quoted form first, or every
+  // postcard template reads as having no fields at all.
+  for (const m of xml.matchAll(/MERGEFIELD\s+"([^"]+)"/g)) names.add(m[1].trim());
+  for (const m of xml.matchAll(/MERGEFIELD\s+([A-Za-z0-9_]+)/g)) names.add(m[1]);
+  // The displayed «Field» form, which may also carry spaces.
+  for (const m of xml.matchAll(/«([^»<]{1,60})»/g)) names.add(m[1].trim());
 
   return [...names];
 }
@@ -51,8 +57,15 @@ function extractDocumentXml(buffer: Buffer): string {
     const name = buffer.toString('utf8', offset + 30, offset + 30 + nameLength);
     const dataStart = offset + 30 + nameLength + extraLength;
 
+    // Directory entries are legitimately zero-length. Several writers emit them, so skip
+    // rather than stop — stopping here meant never reaching word/document.xml.
+    if (name.endsWith('/')) {
+      offset = dataStart;
+      continue;
+    }
+
     if (compressedSize === 0 && uncompressedSize === 0) {
-      // Sizes live in the data descriptor — fall back to the central directory scan.
+      // Sizes live in the data descriptor — we cannot tell where this entry ends.
       break;
     }
 

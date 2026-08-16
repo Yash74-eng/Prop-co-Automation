@@ -54,10 +54,31 @@ Five steps down the left, each unlocked by the one before it.
 | **4 · Verify** | Run the BizFile check and the Claude cross-check. Findings appear in-app and are appended to the workbook, along with a **BizFile Coverage** sheet stating how much of the queue was actually answered. Corrected addresses can be applied here, which **re-runs the whole pipeline** — see below. |
 | **5 · Mail merge** | Validate a `.docx` against the generated headers and copy the command that exports the PDFs. |
 
-Every step that accepts an upload offers a **template** with the exact column names and a
-worked example — the Main Database itself, the comps benchmarks, the do-not-contact list,
-a BizFile export, and the mail-merge field reference. The finished workbook downloads
-automatically when a run completes; turn that off in Configure if you would rather not.
+### Templates
+
+Every input has a template at `GET /api/templates/:kind`, linked from the step that uses
+it. Six spreadsheets carry the exact headers plus worked examples and a *How to use* tab:
+`main-database`, `comps`, `suppression`, `institutions`, `bizfile`, `merge-fields`.
+
+Three are **real Word documents** with `MERGEFIELD` codes already placed —
+`letter-docx`, `envelope-docx`, `postcard-docx`. They exist because a field typed as plain
+text looks identical on screen to a proper merge field and merges as literal text; starting
+from a correct document removes that whole class of mistake. Each is validated in the test
+suite by the same `checkMergeFields` that step 5 runs, against the channel it belongs to.
+
+Templates are round-tripped in tests through the readers that consume them, because a
+template the app cannot read is worse than none: the first `main-database` template
+invented headers like `Owner 1 Name`, parsed cleanly, and produced zero recipients.
+
+The finished workbook downloads automatically when a run completes; turn that off in
+Configure if you would rather not.
+
+### Running it without a terminal
+
+Non-technical users can double-click **`Start PropCo.bat`** on Windows or
+**`start-propco.sh`** on Mac. Either one checks for Node, installs dependencies and builds
+the UI on first run, creates `.env` from the example, then starts the server and opens the
+browser. **`HOW TO RUN.md`** is the plain-English guide to hand over with it.
 
 ### Correcting an address re-runs everything
 
