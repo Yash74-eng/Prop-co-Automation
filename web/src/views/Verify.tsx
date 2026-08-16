@@ -41,6 +41,7 @@ export function VerifyView({ state }: { state: JobState }) {
 
   const severities = job.crossCheck?.severities ?? {};
   const run = job.bizfileRun;
+  const ccRun = job.crossCheckRun;
 
   return (
     <>
@@ -309,34 +310,51 @@ export function VerifyView({ state }: { state: JobState }) {
           </div>
         ) : null}
 
+        {ccRun?.running ? (
+          <Msg kind="info">
+            <b>
+              Checked {ccRun.done} of {ccRun.total} batches.
+            </b>{' '}
+            This runs on the server and takes a few minutes for a full sheet — you can leave
+            this page and come back.
+          </Msg>
+        ) : null}
+
+        {ccRun?.error ? (
+          <Msg kind="err">
+            <b>The cross-check did not finish.</b>
+            <br />
+            {ccRun.error}
+          </Msg>
+        ) : null}
+
         <div className="actions">
           <button
-            disabled={!!busy || !health?.anthropicKey}
+            disabled={!!busy || !health?.anthropicKey || ccRun?.running}
             onClick={() =>
-              void guard('Claude cross-check', () => api.crossCheck(job.id, {}), 'Cross-check complete').then(
-                (r) => {
-                  if (!r) return;
-                  setJob(r);
-                  setFindings(r.findings);
-                },
-              )
+              // The server answers 202 and keeps working; useJob polls from here.
+              void guard('Claude cross-check', () => api.crossCheck(job.id, {})).then((r) => {
+                if (!r) return;
+                setJob(r);
+                setFindings(r.findings ?? []);
+              })
             }
           >
-            {busy === 'Claude cross-check' ? <Spinner /> : null}
-            Check all {(job.stats?.recipients ?? 0).toLocaleString('en-SG')} rows
+            {busy === 'Claude cross-check' || ccRun?.running ? <Spinner /> : null}
+            {ccRun?.running
+              ? `Checking ${ccRun.done} / ${ccRun.total} batches…`
+              : `Check all ${(job.stats?.recipients ?? 0).toLocaleString('en-SG')} rows`}
           </button>
           <button
             className="ghost"
-            disabled={!!busy || !health?.anthropicKey}
+            disabled={!!busy || !health?.anthropicKey || ccRun?.running}
             onClick={() =>
-              void guard(
-                'Claude cross-check',
-                () => api.crossCheck(job.id, { maxRows: 40 }),
-                'Sample cross-check complete',
+              void guard('Claude cross-check', () =>
+                api.crossCheck(job.id, { maxRows: 40 }),
               ).then((r) => {
                 if (!r) return;
                 setJob(r);
-                setFindings(r.findings);
+                setFindings(r.findings ?? []);
               })
             }
           >

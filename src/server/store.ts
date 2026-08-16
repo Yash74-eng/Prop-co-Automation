@@ -56,6 +56,18 @@ export interface Job {
     error?: string;
   };
   crossCheck?: { result: CrossCheckResult; runAt: Date };
+  /**
+   * Progress of an in-flight Claude cross-check. A full sheet is dozens of batches and
+   * takes minutes — longer than a browser holds a request open — so the route starts the
+   * work and returns; the UI polls this.
+   */
+  crossCheckRun?: {
+    total: number;
+    done: number;
+    startedAt: Date;
+    finishedAt?: Date;
+    error?: string;
+  };
   log: { at: Date; step: string; message: string }[];
 }
 
@@ -125,6 +137,12 @@ export function jobSummary(job: Job) {
       ? {
           ...job.bizfileRun,
           running: !job.bizfileRun.finishedAt,
+        }
+      : null,
+    crossCheckRun: job.crossCheckRun
+      ? {
+          ...job.crossCheckRun,
+          running: !job.crossCheckRun.finishedAt,
         }
       : null,
     crossCheck: job.crossCheck

@@ -15,6 +15,15 @@ export interface JobSummary {
   warnings: { scope: string; message: string; count?: number; samples?: string[] }[];
   channel: 'lawyer-letter' | 'postcard' | null;
   bizfile: { runAt: string; resolver: string; count: number; verdicts: Record<string, number> } | null;
+  /** Progress of an in-flight Claude cross-check; a full sheet takes minutes. */
+  crossCheckRun: {
+    total: number;
+    done: number;
+    startedAt: string;
+    finishedAt?: string;
+    error?: string;
+    running: boolean;
+  } | null;
   /** Progress of an in-flight BizFile run; a full queue takes minutes. */
   bizfileRun: {
     total: number;

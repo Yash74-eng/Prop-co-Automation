@@ -14,3 +14,10 @@ storage/
 # Internal competitive intelligence — the .example.json templates are committed instead.
 config/*.json
 !config/*.example.json
+
+# Figment's real Word templates and any other letter/envelope documents.
+# These carry actual letter wording and branding — keep them out of the repo,
+# especially while it is public. The generated starter templates live in
+# src/excel/templates.ts and are built on demand.
+*.docx
+*.doc

@@ -894,35 +894,70 @@ router.post('/jobs/:id/cross-check', async (req, res) => {
   try {
     const job = requireJob(String(req.params.id));
     if (!job.result) throw new Error('Nothing generated yet for this job');
-
-    const result = await crossCheck(
-      job.result.channel,
-      {
-        lawyerLetterRows: job.result.lawyerLetterRows,
-        postcardRows: job.result.postcardRows,
-      },
-      {
-        batchSize: numberOr(req.body?.batchSize, 40),
-        concurrency: numberOr(req.body?.concurrency, 3),
-        maxRows: req.body?.maxRows ? numberOr(req.body.maxRows, 0) : undefined,
-      },
-    );
-    job.crossCheck = { result, runAt: new Date() };
-
-    if (job.outputPath && existsSync(job.outputPath)) {
-      await appendSheet(
-        job.outputPath,
-        SHEET_NAMES.claude,
-        CLAUDE_SHEET_HEADERS,
-        findingsToRows(result),
+    if (job.crossCheckRun && !job.crossCheckRun.finishedAt) {
+      throw new Error(
+        `A cross-check is already running (${job.crossCheckRun.done} of ${job.crossCheckRun.total} batches).`,
       );
     }
-    logStep(
-      job,
-      'cross-check',
-      `${result.rowsChecked} rows, ${result.findings.length} findings, model ${result.model}`,
+
+    const channel = job.result.channel;
+    const rows = {
+      lawyerLetterRows: job.result.lawyerLetterRows,
+      postcardRows: job.result.postcardRows,
+    };
+    const batchSize = numberOr(req.body?.batchSize, 40);
+    const maxRows = req.body?.maxRows ? numberOr(req.body.maxRows, 0) : undefined;
+    const rowCount = Math.min(
+      maxRows ?? Number.POSITIVE_INFINITY,
+      channel === 'lawyer-letter' ? rows.lawyerLetterRows.length : rows.postcardRows.length,
     );
-    res.json({ ...jobSummary(job), findings: result.findings.slice(0, 300) });
+
+    // A full sheet is dozens of batches and runs for minutes — well past what a browser
+    // will hold a request open for. Start the work, answer 202, and let the UI poll.
+    job.crossCheckRun = {
+      total: Math.max(1, Math.ceil(rowCount / batchSize)),
+      done: 0,
+      startedAt: new Date(),
+    };
+    logStep(job, 'cross-check', `started: ${rowCount} rows in ${job.crossCheckRun.total} batches`);
+
+    void (async () => {
+      try {
+        const result = await crossCheck(channel, rows, {
+          batchSize,
+          concurrency: numberOr(req.body?.concurrency, 3),
+          maxRows,
+          onProgress: (done, total) => {
+            if (job.crossCheckRun) Object.assign(job.crossCheckRun, { done, total });
+          },
+        });
+        job.crossCheck = { result, runAt: new Date() };
+
+        if (job.outputPath && existsSync(job.outputPath)) {
+          await appendSheet(
+            job.outputPath,
+            SHEET_NAMES.claude,
+            CLAUDE_SHEET_HEADERS,
+            findingsToRows(result),
+          );
+        }
+        logStep(
+          job,
+          'cross-check',
+          `${result.rowsChecked} rows, ${result.findings.length} findings, model ${result.model}`,
+        );
+        if (job.crossCheckRun) job.crossCheckRun.finishedAt = new Date();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (job.crossCheckRun) {
+          job.crossCheckRun.error = message;
+          job.crossCheckRun.finishedAt = new Date();
+        }
+        logStep(job, 'cross-check', `failed: ${message}`);
+      }
+    })();
+
+    res.status(202).json(jobSummary(job));
   } catch (error) {
     fail(res, error);
   }

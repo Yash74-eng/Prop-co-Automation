@@ -47,7 +47,8 @@ export function useJob(): JobState {
 
   // A BizFile batch runs on the server for minutes after the request returns 202, so poll
   // while one is in flight and stop as soon as it finishes.
-  const runningJobId = job?.bizfileRun?.running ? job.id : null;
+  const runningJobId =
+    job?.bizfileRun?.running || job?.crossCheckRun?.running ? (job?.id ?? null) : null;
   useEffect(() => {
     if (!runningJobId) return;
     const timer = setInterval(() => {
