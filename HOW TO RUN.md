@@ -6,7 +6,7 @@ You do not need to know anything technical. There is one file to double-click.
 
 ## Windows
 
-1. Double-click **`Start PropCo.bat`**
+1. Double-click **`Run PropCo.bat`**
 2. A black window opens. Leave it alone.
 3. Your browser opens the app after a few seconds.
 
@@ -33,7 +33,7 @@ Every run after that takes about five seconds.
 
 If it says **Node.js is not installed**, it will open the download page for you. Click the
 big green **LTS** button, run the installer, click Next until it finishes, then
-double-click `Start PropCo.bat` again. Node.js is free and made by the same people behind
+double-click `Run PropCo.bat` again. Node.js is free and made by the same people behind
 most business software you already use.
 
 ---
@@ -50,6 +50,9 @@ in the way.
 ```
 http://localhost:5173
 ```
+
+The address printed in the black window is **not clickable** — clicking it does nothing.
+Type or copy it into your browser instead.
 
 **If you closed the browser tab by accident**, the app is still running — just go to that
 address again.

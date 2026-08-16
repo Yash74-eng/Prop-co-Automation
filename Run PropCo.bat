@@ -4,14 +4,20 @@ rem  PropCo Outreach Automation - one-click start for Windows.
 rem
 rem  Double-click this file. It installs what it needs the first time,
 rem  then opens the app in your browser. Nothing to type.
+rem
+rem  NOTE ON THE FILE NAME: this must not begin with the word "start".
+rem  cmd.exe reads a leading "start" as its own built-in command and
+rem  opens a blank prompt instead of running the file.
 rem ===================================================================
 
-rem Re-entry used to open the browser a few seconds after the server starts.
+rem Re-entry: the second copy waits for the server, then opens the browser.
 if "%~1"=="--openbrowser" goto openbrowser
 
 setlocal enabledelayedexpansion
 title PropCo Outreach Automation
 cd /d "%~dp0"
+
+set "APPURL=http://localhost:5173"
 
 echo.
 echo   ==========================================
@@ -31,13 +37,15 @@ echo   Node.js !NODEVER! found. Good.
 echo.
 
 rem ------------------------------------------------------ already running?
-netstat -ano | findstr /r /c:":5173 .*LISTENING" >nul 2>&1
+call :isup
 if not errorlevel 1 (
-  echo   The app is already running.
-  echo   Opening it in your browser...
-  start "" http://localhost:5173
+  echo   The app is already running. Opening it in your browser...
+  start "" "%APPURL%"
   echo.
-  echo   Close the other PropCo window first if you want to restart it.
+  echo   If nothing opened, type this into your browser yourself:
+  echo       %APPURL%
+  echo.
+  echo   To restart it, close the other PropCo window first.
   echo.
   pause
   exit /b 0
@@ -79,11 +87,14 @@ if not exist "web\dist\index.html" (
 )
 
 rem ------------------------------------------------------------------- launch
-echo   Starting. Your browser will open in a few seconds.
+echo   Starting up. Your browser opens by itself once it is ready.
 echo.
 echo   ------------------------------------------------------------
 echo    KEEP THIS BLACK WINDOW OPEN while you use the app.
 echo    Closing it shuts the app down. That is how you stop it.
+echo.
+echo    If your browser does not open, type this address yourself:
+echo        %APPURL%
 echo   ------------------------------------------------------------
 echo.
 
@@ -95,10 +106,35 @@ echo   The app has stopped.
 pause
 exit /b 0
 
+rem ---------------------------------------------------------- readiness check
+rem Returns 0 when the app answers, 1 when it does not.
+rem The pipe must NOT be written as ^| here: inside double quotes cmd treats ^ as a
+rem literal character, so PowerShell would receive "^|" and fail to parse, making a
+rem running app look stopped.
+:isup
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try{$null=Invoke-WebRequest -Uri 'http://localhost:5173/api/health' -UseBasicParsing -TimeoutSec 3; exit 0}catch{exit 1}" >nul 2>&1
+exit /b %errorlevel%
+
 rem ------------------------------------------------------------------ browser
+rem Waits for the server to actually answer before opening the browser. A fixed
+rem delay guesses wrong on a slow machine and lands the user on a dead page.
 :openbrowser
-timeout /t 6 /nobreak >nul
-start "" http://localhost:5173
+set TRIES=0
+:waitloop
+set /a TRIES+=1
+call :isup
+if not errorlevel 1 goto browserready
+if %TRIES% GEQ 45 goto browsergiveup
+timeout /t 2 /nobreak >nul
+goto waitloop
+
+:browserready
+start "" "http://localhost:5173"
+exit /b 0
+
+:browsergiveup
+rem 90 seconds with no response. Opening anyway would show an error page, so
+rem leave the main window's instructions to speak for themselves.
 exit /b 0
 
 rem ------------------------------------------------------------------- errors

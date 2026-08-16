@@ -98,18 +98,28 @@ if [ ! -f "web/dist/index.html" ]; then
 fi
 
 # ------------------------------------------------------------------- launch
-echo "  Starting. Your browser will open in a few seconds."
+echo "  Starting up. Your browser opens by itself once it is ready."
 echo
 echo "  ------------------------------------------------------------"
 echo "   KEEP THIS WINDOW OPEN while you use the app."
 echo "   Closing it shuts the app down. That is how you stop it."
+echo
+echo "   If your browser does not open, type this address yourself:"
+echo "       http://localhost:5173"
 echo "  ------------------------------------------------------------"
 echo
 
+# Wait until the server actually answers before opening the browser. A fixed delay
+# guesses wrong on a slow machine and lands the user on a dead page.
 (
-  sleep 6
-  command -v open >/dev/null 2>&1 && open "http://localhost:5173"
-  command -v xdg-open >/dev/null 2>&1 && xdg-open "http://localhost:5173"
+  for _ in $(seq 1 45); do
+    if curl -s -o /dev/null --max-time 2 http://localhost:5173/api/health 2>/dev/null; then
+      command -v open >/dev/null 2>&1 && open "http://localhost:5173"
+      command -v xdg-open >/dev/null 2>&1 && xdg-open "http://localhost:5173"
+      break
+    fi
+    sleep 2
+  done
 ) >/dev/null 2>&1 &
 
 npm start

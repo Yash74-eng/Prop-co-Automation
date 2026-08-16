@@ -75,7 +75,7 @@ Configure if you would rather not.
 
 ### Running it without a terminal
 
-Non-technical users can double-click **`Start PropCo.bat`** on Windows or
+Non-technical users can double-click **`Run PropCo.bat`** on Windows or
 **`start-propco.sh`** on Mac. Either one checks for Node, installs dependencies and builds
 the UI on first run, creates `.env` from the example, then starts the server and opens the
 browser. **`HOW TO RUN.md`** is the plain-English guide to hand over with it.
