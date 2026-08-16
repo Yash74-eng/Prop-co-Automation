@@ -210,6 +210,14 @@ export interface PipelineOptions {
    * patched into the finished sheet.
    */
   ownerAddressOverrides?: Record<string, AddressOverride>;
+  /**
+   * Transactions from a Market Watch style sheet. When present these replace the
+   * benchmark table: comps are selected per property from its own district rather than
+   * looked up from a pre-computed row.
+   */
+  transactions?: import('../comps/marketWatch.js').Transaction[];
+  compSelection?: import('../comps/marketWatch.js').CompSelectionOptions;
+  pricing?: import('../comps/pricing.js').PricingOptions;
 }
 
 export interface AddressOverride {

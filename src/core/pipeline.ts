@@ -36,6 +36,8 @@ import {
 import { classifyName, DEFAULT_INSTITUTIONS_TO_AVOID, DEVELOPER_NAMES } from './names.js';
 import { buildDuplicateIndex, buildOwnerNoColumn, dedupe } from './dedupe.js';
 import { CompsIndex, lookupComps } from './comps.js';
+import { defaultCompSelection, selectComps } from '../comps/marketWatch.js';
+import { defaultPricing, priceFromComps } from '../comps/pricing.js';
 import { addDays, formatDate, normKey, squash, uniq } from './text.js';
 
 export interface PipelineDependencies {
@@ -419,7 +421,56 @@ export function runPipeline(
   groups.forEach((group, i) => {
     const comments: string[] = [...group.notes];
 
-    if (options.channel === 'lawyer-letter') {
+    if (options.channel === 'lawyer-letter' && options.transactions?.length) {
+      // Transactions sheet supplied: pick comps from this property's own district.
+      const gfa = maxDefined(group.members.map((m) => m.gfaSqft));
+      const selection = selectComps(
+        options.transactions,
+        { postalCode: group.fullAddress },
+        options.compSelection ?? defaultCompSelection(),
+        options.mailDate,
+      );
+      const priced = priceFromComps(selection.comps, { gfaSqft: gfa }, options.pricing ?? defaultPricing());
+
+      if (selection.comps.length === 0) {
+        noPriceCount++;
+        flags.push({
+          sourceRow: group.members.map((m) => m.sourceRow).join(', '),
+          address: group.fullAddress,
+          ownerName: group.registeredProprietor,
+          flag: 'No comparable transactions',
+          detail: selection.notes.join(' | '),
+          severity: 'error',
+        });
+      }
+      comments.push(priced.basis, ...selection.notes);
+
+      const [c1, c2] = selection.comps;
+      lawyerLetterRows.push({
+        Comments: uniq(comments).join(' | '),
+        'Owner No.': ownerNos[i] ?? '',
+        Target: group.target,
+        Address: group.address,
+        Full_Address: group.fullAddress,
+        Neighbourhood: group.neighbourhood,
+        'Land Use': group.landUse,
+        Mail_Date: options.mailDate,
+        Valid_Date: validDate(options.mailDate),
+        Registered_Proprietor: group.registeredProprietor,
+        Registered_Proprietor_mailing_address: group.mailingAddress,
+        'Duplicate Owner / Owner Addresses': duplicateIndex.get(group.key) ?? 'unique',
+        minimum_Price: priced.minimumPrice ?? '',
+        higher_Price: priced.higherPrice ?? '',
+        Comp_Address_1: c1?.address ?? '',
+        Comp_1: c1?.price ?? '',
+        Comp_1_Date: c1?.date ?? '',
+        Comp_Address_2: c2?.address ?? '',
+        Comp_2: c2?.price ?? '',
+        Comp_2_Date: c2?.date ?? '',
+        Status: '',
+        'Date Responded': '',
+      });
+    } else if (options.channel === 'lawyer-letter') {
       const first = group.members[0];
       const gfa = maxDefined(group.members.map((m) => m.gfaSqft));
       const psf = maxDefined(group.members.map((m) => m.benchmarkPsf));

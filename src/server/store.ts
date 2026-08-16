@@ -34,6 +34,8 @@ export interface Job {
   comps: CompsRecord[];
   compsSource: string;
   suppressionCount: number;
+  /** Transactions from a Market Watch style upload, when one was supplied. */
+  transactions?: import('../comps/marketWatch.js').Transaction[];
   options?: PipelineOptions;
   result?: PipelineResult & { dedupeAudit?: unknown[] };
   outputPath?: string;

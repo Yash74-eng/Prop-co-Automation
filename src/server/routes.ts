@@ -49,6 +49,8 @@ import {
   openDataResolver,
   OpenDataUnavailableError,
 } from '../bizfile/opendata.js';
+import { defaultCompSelection, parseTransactionSheet } from '../comps/marketWatch.js';
+import { defaultPricing } from '../comps/pricing.js';
 import { CLAUDE_SHEET_HEADERS, crossCheck, findingsToRows } from '../verify/claude.js';
 import { isCorporateName } from '../core/names.js';
 import { normKey, parseLooseDate, squash } from '../core/text.js';
@@ -135,13 +137,50 @@ router.get('/jobs/:id/sheets/:name/preview', (req, res) => {
   }
 });
 
-/** POST /api/jobs/:id/comps — upload a replacement comps benchmark table. */
+/**
+ * POST /api/jobs/:id/comps — upload comps.
+ *
+ * Two shapes are accepted and told apart automatically, because asking which one you
+ * have is a question the file can answer for itself:
+ *
+ *  - A **transactions sheet** in the Market Watch shape: one tab per district, columns
+ *    including District, Price ($) and URA Zoning. Comps are then selected per property
+ *    from its own district.
+ *  - A **benchmark table**: one pre-computed row per neighbourhood, as before.
+ */
 router.post('/jobs/:id/comps', upload.single('file'), (req, res) => {
   try {
     const job = requireJob(String(req.params.id));
     if (!req.file) throw new Error('No file uploaded');
     const { wb, names } = readWorkbookSheets(req.file.path);
+
+    // Try every tab as transactions first; a Market Watch workbook keeps one per district.
+    const transactions: import('../comps/marketWatch.js').Transaction[] = [];
+    const tabsUsed: string[] = [];
+    for (const name of names) {
+      const table = sheetToTable(wb, name);
+      if (!looksLikeTransactions(table.headers)) continue;
+      const rows = parseTransactionSheet(name, table.headers, table.rows);
+      if (rows.length > 0) {
+        transactions.push(...rows);
+        tabsUsed.push(name);
+      }
+    }
+
+    if (transactions.length > 0) {
+      job.transactions = transactions;
+      job.comps = [];
+      const districts = [...new Set(transactions.map((t) => t.district))].sort((a, b) => a - b);
+      job.compsSource =
+        `${req.file.originalname} — ${transactions.length} transactions ` +
+        `across ${districts.length} districts (${tabsUsed.length} tabs)`;
+      logStep(job, 'comps', `Transactions loaded: ${job.compsSource}`);
+      res.json({ ...jobSummary(job), mode: 'transactions', transactions: transactions.length, districts });
+      return;
+    }
+
     const sheetName = squash(req.body?.sheetName) || names[0];
+    job.transactions = undefined;
     job.comps = parseCompsTable(sheetToTable(wb, sheetName));
     job.compsSource = `${req.file.originalname} [${sheetName}]`;
     logStep(job, 'comps', `Replaced with ${job.comps.length} rows from ${job.compsSource}`);
@@ -214,6 +253,19 @@ router.post('/jobs/:id/run', async (req, res) => {
       deriveMissingPrices: body.deriveMissingPrices !== false,
       suppressionList: ((job as { suppression?: unknown[] }).suppression ?? []) as never[],
       comps: job.comps,
+      transactions: job.transactions,
+      compSelection: defaultCompSelection({
+        landOnly: body.compsLandOnly !== false,
+        fullCommercialOnly: body.compsFullCommercialOnly !== false,
+        recentPool: numberOr(body.compsRecentPool, 12),
+        maxAgeMonths: numberOr(body.compsMaxAgeMonths, 36),
+      }),
+      pricing: defaultPricing({
+        method: body.pricingMethod ?? 'comps-psf-band',
+        lowerBand: numberOr(body.pricingLowerBand, 0.05),
+        upperBand: numberOr(body.pricingUpperBand, 0.1),
+        rounding: numberOr(body.derivedRounding, 50_000),
+      }),
     });
 
     // Institutions-to-avoid comes from the uploaded workbook when it carries the sheet,
@@ -912,6 +964,16 @@ router.post('/jobs/:id/mailmerge', upload.single('file'), (req, res) => {
 });
 
 /** Pull the institutions-to-avoid list out of the uploaded workbook, if it has one. */
+/**
+ * A transactions tab is recognised by the three columns the selection rule needs:
+ * which district, what it sold for, and how it is zoned.
+ */
+function looksLikeTransactions(headers: string[]): boolean {
+  const keys = headers.map((h) => normKey(h));
+  const has = (pattern: RegExp) => keys.some((k) => pattern.test(k));
+  return has(/^DISTRICT$/) && has(/^PRICE/) && has(/URA ZONING|^ZONING/);
+}
+
 function readInstitutionsFromWorkbook(path: string) {
   try {
     const { wb, names } = readWorkbookSheets(path);
