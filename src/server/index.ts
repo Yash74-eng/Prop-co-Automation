@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { router } from './routes.js';
 import { pruneStorage, STORAGE_DIR } from './store.js';
+import { wordStatus } from '../mailmerge/wordMerge.js';
 
 // Load .env without adding a dependency.
 loadEnv();
@@ -14,13 +15,18 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use('/api', router);
 
-app.get('/api/health', (_req, res) => {
+app.get('/api/health', async (_req, res) => {
+  // Whether this machine can produce PDFs itself, so the UI can say so before the
+  // operator commits to a run rather than after it hangs.
+  const word = await wordStatus();
   res.json({
     ok: true,
     storage: STORAGE_DIR,
     anthropicKey: !!process.env.ANTHROPIC_API_KEY,
     bizfileEnabled: process.env.BIZFILE_ENABLED === '1',
     model: process.env.ANTHROPIC_MODEL ?? 'claude-opus-5',
+    wordAvailable: word.available,
+    wordReason: word.reason ?? null,
   });
 });
 

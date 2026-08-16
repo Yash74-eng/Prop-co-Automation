@@ -45,10 +45,12 @@ export function useJob(): JobState {
       .catch(() => localStorage.removeItem(STORAGE_KEY));
   }, []);
 
-  // A BizFile batch runs on the server for minutes after the request returns 202, so poll
-  // while one is in flight and stop as soon as it finishes.
+  // BizFile batches, cross-checks and Word merges all run on the server for minutes after
+  // the request returns 202, so poll while one is in flight and stop as soon as it ends.
   const runningJobId =
-    job?.bizfileRun?.running || job?.crossCheckRun?.running ? (job?.id ?? null) : null;
+    job?.bizfileRun?.running || job?.crossCheckRun?.running || job?.mergeRun?.running
+      ? (job?.id ?? null)
+      : null;
   useEffect(() => {
     if (!runningJobId) return;
     const timer = setInterval(() => {

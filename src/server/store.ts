@@ -68,6 +68,37 @@ export interface Job {
     finishedAt?: Date;
     error?: string;
   };
+  /**
+   * The merge setup, kept on the job so the template and the chosen data source survive
+   * between "validate", "test one" and "run all". Re-uploading the same two files three
+   * times to do one job is the friction this removes.
+   */
+  merge?: {
+    templatePath: string;
+    templateName: string;
+    /** Data source in use — the generated workbook, or an edited copy the operator uploaded. */
+    dataPath: string;
+    dataName: string;
+    dataIsUpload: boolean;
+    sheetName: string;
+    /** Records that sheet holds — what "run all" will actually produce. */
+    dataRows: number;
+    outputDir: string;
+    check: import('../mailmerge/wordMerge.js').MergeFieldCheck;
+    /** PDFs on disk from the last completed run, newest run wins. */
+    pdfs: string[];
+    lastRunAt?: Date;
+    /** Record cap of the last run — 1 means it was a single-record proof. */
+    lastRunLimit?: number;
+  };
+  mergeRun?: {
+    total: number;
+    done: number;
+    limit?: number;
+    startedAt: Date;
+    finishedAt?: Date;
+    error?: string;
+  };
   log: { at: Date; step: string; message: string }[];
 }
 
@@ -143,6 +174,26 @@ export function jobSummary(job: Job) {
       ? {
           ...job.crossCheckRun,
           running: !job.crossCheckRun.finishedAt,
+        }
+      : null,
+    merge: job.merge
+      ? {
+          templateName: job.merge.templateName,
+          dataName: job.merge.dataName,
+          dataIsUpload: job.merge.dataIsUpload,
+          sheetName: job.merge.sheetName,
+          dataRows: job.merge.dataRows,
+          check: job.merge.check,
+          pdfCount: job.merge.pdfs.length,
+          pdfNames: job.merge.pdfs.slice(0, 12).map((p) => p.split(/[\\/]/).pop() ?? p),
+          lastRunAt: job.merge.lastRunAt,
+          lastRunLimit: job.merge.lastRunLimit,
+        }
+      : null,
+    mergeRun: job.mergeRun
+      ? {
+          ...job.mergeRun,
+          running: !job.mergeRun.finishedAt,
         }
       : null,
     crossCheck: job.crossCheck

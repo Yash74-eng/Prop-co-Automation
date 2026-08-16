@@ -1,17 +1,22 @@
 import { useState } from 'react';
-import { api, type MergeCheck } from '../api.js';
+import { api } from '../api.js';
 import type { JobState } from '../useJob.js';
-import { Card, Check, Empty, Field, Msg, Spinner, SummaryList, TemplateLink } from '../ui.jsx';
+import { Card, Empty, Field, Msg, Spinner, StatTile, SummaryList, TemplateLink } from '../ui.jsx';
 
 export function MailMergeView({ state }: { state: JobState }) {
-  const { job, busy, guard } = state;
-  const [file, setFile] = useState<File | null>(null);
-  const [splitPerRecord, setSplitPerRecord] = useState(true);
-  const [result, setResult] = useState<MergeCheck | null>(null);
+  const { job, health, busy, guard, setJob } = state;
+  const [template, setTemplate] = useState<File | null>(null);
+  const [dataFile, setDataFile] = useState<File | null>(null);
 
   if (!job || !job.hasResult) {
     return <Empty>Generate a sheet first — there is nothing to merge yet.</Empty>;
   }
+
+  const merge = job.merge;
+  const run = job.mergeRun;
+  const wordReady = health?.wordAvailable !== false;
+  // A test run is a single record; anything else is the real thing.
+  const wasTestRun = merge?.lastRunLimit === 1;
 
   return (
     <>
@@ -19,27 +24,25 @@ export function MailMergeView({ state }: { state: JobState }) {
         <div>
           <h1>Mail merge</h1>
           <p className="lede">
-            Check a Word template against the generated headers, then run the emitted script to
-            export PDFs through the Word installed on this machine. A field-name mismatch here is
-            the classic silent failure — the letter prints with a blank address.
+            Point a Word template at the sheet you are actually sending, prove one PDF looks right,
+            then export the rest. Everything runs here — no workbook round-trip, no PowerShell.
           </p>
         </div>
       </div>
 
-      <Card title="Validate a template">
+      {/* ------------------------------------------------------------ 1. setup */}
+      <Card
+        title="1 · Template and data"
+        hint="The data source defaults to the workbook this tool generated."
+      >
         <div className="grid">
-          <Field label="Word template (.docx)" hint="The letter, or the envelope.">
+          <Field label="Word template (.docx)" hint="The letter, the envelope, or the postcard.">
             <input
               type="file"
               accept=".docx"
-              onChange={(e) => {
-                setFile(e.target.files?.[0] ?? null);
-                setResult(null);
-              }}
+              onChange={(e) => setTemplate(e.target.files?.[0] ?? null)}
             />
-            <div
-              style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}
-            >
+            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
               <span className="hint" style={{ margin: 0 }}>
                 Start from a ready-made Word file — the merge fields are already in place:
               </span>
@@ -49,44 +52,56 @@ export function MailMergeView({ state }: { state: JobState }) {
               <TemplateLink kind="merge-fields" label="Merge field reference .xlsx" />
             </div>
           </Field>
-        </div>
 
-        <Check
-          checked={splitPerRecord}
-          onChange={setSplitPerRecord}
-          label="One PDF per record"
-          hint="Off produces a single merged document instead."
-        />
+          <Field
+            label="Merge from your own sheet (.xlsx) — optional"
+            hint="Upload the copy you edited after BizFile and the cross-check. Leave empty to merge from the generated workbook."
+          >
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={(e) => setDataFile(e.target.files?.[0] ?? null)}
+            />
+            {dataFile ? (
+              <p className="hint" style={{ marginTop: 8 }}>
+                Merging from <b>{dataFile.name}</b>. The template is checked against{' '}
+                <i>this file's</i> headers, not the ones this tool would have written — an edited
+                sheet is the only thing that proves the merge.
+              </p>
+            ) : null}
+          </Field>
+        </div>
 
         <div className="actions">
           <button
-            disabled={!file || !!busy}
+            disabled={(!template && !merge) || !!busy}
             onClick={() =>
-              file &&
+              template &&
               void guard(
                 'Template check',
-                () => api.mailmerge(job.id, file, splitPerRecord),
+                () => api.mailmerge(job.id, template, dataFile ?? undefined),
                 'Template checked',
-              ).then((r) => r && setResult(r))
+              ).then((r) => r && setJob(r))
             }
           >
             {busy === 'Template check' ? <Spinner /> : null}
-            Validate and build merge script
+            Check template against the sheet
           </button>
         </div>
       </Card>
 
-      {result ? (
+      {merge ? (
         <>
-          {result.check.ok ? (
+          {merge.check.ok ? (
             <Msg kind="ok">
-              All {result.check.templateFields.length} merge fields in this template have a matching
-              column in the <b>{result.sheetName}</b> sheet.
+              All {merge.check.templateFields.length} merge fields in <b>{merge.templateName}</b>{' '}
+              have a matching column in <b>{merge.sheetName}</b> ({merge.dataName},{' '}
+              {merge.dataRows.toLocaleString('en-SG')} records).
             </Msg>
           ) : (
             <Msg kind="err">
-              This template expects fields the sheet does not provide, so they would merge{' '}
-              <b>blank</b>: {result.check.missingInSheet.join(', ')}.
+              This template expects fields <b>{merge.sheetName}</b> does not provide, so they would
+              merge <b>blank</b>: {merge.check.missingInSheet.join(', ')}.
               <br />
               <span style={{ fontSize: 12.5 }}>
                 If those look like the other channel's field names, this template belongs to the
@@ -98,16 +113,18 @@ export function MailMergeView({ state }: { state: JobState }) {
 
           <div className="grid">
             <Card title="Fields in the template" flat>
-              {result.check.templateFields.length ? (
-                <SummaryList items={result.check.templateFields.map((f) => ({ label: f, count: 1 }))} />
+              {merge.check.templateFields.length ? (
+                <SummaryList
+                  items={merge.check.templateFields.map((f) => ({ label: f, count: 1 }))}
+                />
               ) : (
                 <p className="hint">No merge fields found in this document.</p>
               )}
             </Card>
             <Card title="Sheet columns the template does not use" flat>
-              {result.check.unusedInTemplate.length ? (
+              {merge.check.unusedInTemplate.length ? (
                 <SummaryList
-                  items={result.check.unusedInTemplate.map((f) => ({ label: f, count: 1 }))}
+                  items={merge.check.unusedInTemplate.map((f) => ({ label: f, count: 1 }))}
                   max={30}
                 />
               ) : (
@@ -120,37 +137,146 @@ export function MailMergeView({ state }: { state: JobState }) {
             </Card>
           </div>
 
-          <Card title="Run the merge" hint="Requires Microsoft Word on this machine.">
-            <p style={{ fontSize: 13.5 }}>
-              Open PowerShell in the repo and run:
-            </p>
-            <pre
-              style={{
-                background: 'var(--panel-alt)',
-                border: '1px solid var(--line)',
-                borderRadius: 7,
-                padding: '10px 12px',
-                overflowX: 'auto',
-                fontSize: 12.5,
-                margin: '8px 0',
-              }}
-            >
-              <code>{result.command}</code>
-            </pre>
-            <button
-              className="secondary tiny"
-              onClick={() => void navigator.clipboard?.writeText(result.command)}
-            >
-              Copy command
-            </button>
-            <p className="hint" style={{ marginTop: 12 }}>
-              The script opens the template, points it at the <b>{result.sheetName}</b> sheet of the
-              generated workbook, and exports{' '}
-              {splitPerRecord ? 'one PDF per record' : 'a single merged PDF'} into a folder beside
-              it. Word is scripted rather than reimplemented because these templates carry headers,
-              footers, QR images and Chinese text that only Word renders faithfully.
+          {/* -------------------------------------------------------- 2. produce */}
+          <Card
+            title="2 · Produce the PDFs"
+            hint="Word is scripted, not reimplemented — these templates carry headers, footers, QR images and Chinese text that only Word renders faithfully."
+          >
+            {!wordReady ? (
+              <Msg kind="warn">
+                <b>PDFs cannot be produced on this machine.</b>
+                <br />
+                {health?.wordReason}
+                <br />
+                <span style={{ fontSize: 12.5 }}>
+                  Set the merge up as above, then download the script below and run it on a PC that
+                  can — it does exactly the same work.
+                </span>
+              </Msg>
+            ) : null}
+
+            {!merge.check.ok ? (
+              <Msg kind="warn">
+                Fix the missing fields first. Merging now would print letters with blank addresses.
+              </Msg>
+            ) : null}
+
+            {run?.running ? (
+              <Msg kind="info">
+                <b>
+                  Exported {run.done} of {run.total}
+                </b>{' '}
+                — Word opens one document per recipient, so a full run takes a few minutes. You can
+                leave this page and come back.
+              </Msg>
+            ) : null}
+
+            {run?.error ? (
+              <Msg kind="err">
+                <b>The merge did not finish.</b>
+                <br />
+                <span style={{ fontSize: 12.5, whiteSpace: 'pre-wrap' }}>{run.error}</span>
+              </Msg>
+            ) : null}
+
+            <div className="actions">
+              <button
+                disabled={!wordReady || !!busy || !!run?.running}
+                onClick={() =>
+                  void guard('Test PDF', () => api.mailmergeRun(job.id, { limit: 1 })).then(
+                    (r) => r && setJob(r),
+                  )
+                }
+              >
+                {busy === 'Test PDF' ? <Spinner /> : null}
+                Test one PDF
+              </button>
+              <button
+                className="secondary"
+                disabled={!wordReady || !!busy || !!run?.running || !merge.check.ok}
+                onClick={() =>
+                  void guard('Mail merge', () => api.mailmergeRun(job.id)).then(
+                    (r) => r && setJob(r),
+                  )
+                }
+              >
+                {busy === 'Mail merge' || run?.running ? <Spinner /> : null}
+                {run?.running
+                  ? `Exporting ${run.done} / ${run.total}…`
+                  : `Run all ${merge.dataRows.toLocaleString('en-SG')} records`}
+              </button>
+              <a className="button secondary tiny" href={api.mailmergeScriptUrl(job.id)}>
+                Download the PowerShell script
+              </a>
+            </div>
+
+            <p className="hint" style={{ marginTop: 10 }}>
+              Start with one. A merge field that resolves to the wrong column looks fine in the
+              header check and only shows up on the page.
             </p>
           </Card>
+
+          {/* -------------------------------------------------------- 3. result */}
+          {merge.pdfCount > 0 && !run?.running ? (
+            <Card title={wasTestRun ? '3 · Check this PDF' : '3 · Collect the PDFs'}>
+              <div className="stats" style={{ marginBottom: 14 }}>
+                <StatTile label="PDFs" value={merge.pdfCount} accent />
+                <StatTile label="Records in sheet" value={merge.dataRows} />
+              </div>
+
+              {wasTestRun ? (
+                <>
+                  <Msg kind="info">
+                    One record only. Read it end to end — the owner name, the property address, the
+                    mailing address and both prices — then run the rest.
+                  </Msg>
+                  <iframe
+                    title="Test PDF"
+                    src={api.mailmergePdfUrl(job.id, 0)}
+                    style={{
+                      width: '100%',
+                      height: 620,
+                      border: '1px solid var(--line)',
+                      borderRadius: 7,
+                      background: 'var(--panel-alt)',
+                    }}
+                  />
+                  <div className="actions" style={{ marginTop: 10 }}>
+                    <a
+                      className="button secondary tiny"
+                      href={api.mailmergePdfUrl(job.id, 0)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open in a new tab
+                    </a>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="actions">
+                    <a className="button" href={api.mailmergeZipUrl(job.id)}>
+                      Download all {merge.pdfCount.toLocaleString('en-SG')} PDFs (.zip)
+                    </a>
+                  </div>
+                  {merge.pdfCount < merge.dataRows ? (
+                    <Msg kind="warn">
+                      {merge.dataRows - merge.pdfCount} of {merge.dataRows} records produced no PDF.
+                      Check the run log before sending — a short export is not a complete mailing.
+                    </Msg>
+                  ) : null}
+                  <p className="hint" style={{ marginTop: 10 }}>
+                    Each file is named after the property address, prefixed with its row number so
+                    the zip sorts in sheet order.
+                  </p>
+                  <SummaryList
+                    items={merge.pdfNames.map((n) => ({ label: n, count: 1 }))}
+                    max={12}
+                  />
+                </>
+              )}
+            </Card>
+          ) : null}
         </>
       ) : null}
 
@@ -167,7 +293,10 @@ export function MailMergeView({ state }: { state: JobState }) {
             Resolve <code>mismatch</code> and <code>entity-inactive</code> verdicts on the BizFile
             sheet — an inactive entity should not receive an offer.
           </li>
-          <li>Confirm the institutions-to-avoid flags are intended, since those are never auto-removed.</li>
+          <li>
+            Confirm the institutions-to-avoid flags are intended, since those are never
+            auto-removed.
+          </li>
         </ul>
       </Card>
     </>

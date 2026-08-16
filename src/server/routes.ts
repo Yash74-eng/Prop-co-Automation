@@ -1,8 +1,8 @@
 /** HTTP API behind the wizard UI. Every step is a separate, explicitly-triggered call. */
 import { Router } from 'express';
 import multer from 'multer';
-import { extname, join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { basename, extname, join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -62,7 +62,12 @@ import {
   templateKinds,
 } from '../excel/templates.js';
 import type { AddressOverride } from '../core/types.js';
-import { checkMergeFields, generateWordMergeScript } from '../mailmerge/wordMerge.js';
+import {
+  checkMergeFields,
+  generateWordMergeScript,
+  runWordMerge,
+  wordStatus,
+} from '../mailmerge/wordMerge.js';
 import { writeFileSync } from 'node:fs';
 
 const upload = multer({
@@ -963,40 +968,286 @@ router.post('/jobs/:id/cross-check', async (req, res) => {
   }
 });
 
-/** POST /api/jobs/:id/mailmerge — validate a template and emit the Word merge script. */
-router.post('/jobs/:id/mailmerge', upload.single('file'), (req, res) => {
+const mergeUpload = upload.fields([
+  { name: 'file', maxCount: 1 },
+  { name: 'data', maxCount: 1 },
+]);
+
+/**
+ * POST /api/jobs/:id/mailmerge — set up the merge.
+ *
+ * Takes the .docx template and, optionally, the operator's own edited workbook to merge
+ * from. The final sheet is normally corrected by hand after BizFile and the Claude
+ * cross-check, so merging from the server's copy would print superseded data.
+ */
+router.post('/jobs/:id/mailmerge', mergeUpload, (req, res) => {
   try {
     const job = requireJob(String(req.params.id));
     if (!job.result || !job.outputPath) throw new Error('Nothing generated yet for this job');
-    if (!req.file) throw new Error('Upload the .docx template to validate against');
 
-    const check = checkMergeFields(req.file.path, job.result.channel);
-    const sheetName =
+    const files = req.files as Record<string, Express.Multer.File[]> | undefined;
+    const templateFile = files?.file?.[0];
+    const dataFile = files?.data?.[0];
+    const templatePath = templateFile?.path ?? job.merge?.templatePath;
+    if (!templatePath) throw new Error('Upload the .docx template to merge with');
+
+    const generatedSheet =
       job.result.channel === 'lawyer-letter' ? SHEET_NAMES.lawyerLetter : SHEET_NAMES.postcardFinal;
-    const outDir = join(OUTPUT_DIR, `pdf-${job.id.slice(0, 8)}`);
-    const script = generateWordMergeScript({
-      templatePath: req.file.path,
-      dataPath: job.outputPath,
+
+    // Each call fully defines the setup: an uploaded workbook is the operator's edited
+    // copy, no upload means merge from the generated one. Its recipient tab may have been
+    // renamed, so fall back to whichever sheet carries the address column.
+    const dataPath = dataFile?.path ?? job.outputPath;
+    const sheetName = dataFile ? pickMergeSheet(dataFile.path, generatedSheet) : generatedSheet;
+
+    // Validate the template against the headers of the data actually being merged, not
+    // against the headers this tool would have written — those can differ once edited.
+    const { headers, rows } = readMergeTable(dataPath, sheetName);
+    const check = checkMergeFields(templatePath, job.result.channel, headers);
+
+    job.merge = {
+      templatePath,
+      templateName: templateFile?.originalname ?? job.merge?.templateName ?? 'template.docx',
+      dataPath,
+      dataName: dataFile?.originalname ?? job.outputFileName ?? 'generated workbook',
+      dataIsUpload: !!dataFile,
       sheetName,
-      outputDir: outDir,
-      fileNameColumn: job.result.channel === 'lawyer-letter' ? 'Full_Address' : 'Owner Name',
-      splitPerRecord: req.body?.splitPerRecord !== 'false',
-    });
-    const scriptPath = join(OUTPUT_DIR, `merge-${job.id.slice(0, 8)}.ps1`);
-    writeFileSync(scriptPath, script, 'utf8');
+      dataRows: rows.length,
+      outputDir: join(OUTPUT_DIR, `pdf-${job.id.slice(0, 8)}`),
+      check,
+      pdfs: job.merge?.pdfs ?? [],
+      lastRunAt: job.merge?.lastRunAt,
+      lastRunLimit: job.merge?.lastRunLimit,
+    };
 
     logStep(
       job,
       'mailmerge',
       check.ok
-        ? `Template fields all present (${check.templateFields.length})`
-        : `Template expects fields the sheet lacks: ${check.missingInSheet.join(', ')}`,
+        ? `Template fields all present (${check.templateFields.length}) against ${sheetName}`
+        : `Template expects fields "${sheetName}" lacks: ${check.missingInSheet.join(', ')}`,
     );
-    res.json({ check, scriptPath, sheetName, command: `powershell -File "${scriptPath}"` });
+    res.json(jobSummary(job));
   } catch (error) {
     fail(res, error);
   }
 });
+
+/**
+ * POST /api/jobs/:id/mailmerge/run — drive Word and export PDFs.
+ *
+ * Returns 202: a full run is one Word document per recipient and takes minutes, far
+ * longer than a browser holds a request open. The UI polls `mergeRun` for progress.
+ */
+router.post('/jobs/:id/mailmerge/run', async (req, res) => {
+  try {
+    const job = requireJob(String(req.params.id));
+    const merge = job.merge;
+    if (!merge) throw new Error('Set up the merge first — upload the template');
+    if (job.mergeRun && !job.mergeRun.finishedAt) throw new Error('A merge is already running');
+    const word = await wordStatus();
+    if (!word.available) {
+      throw new Error(
+        `${word.reason} You can still download the merge script below and run it on a PC that can.`,
+      );
+    }
+
+    const limit = Math.max(0, Math.trunc(Number(req.body?.limit ?? 0) || 0));
+    const splitPerRecord = req.body?.splitPerRecord !== false;
+
+    // Start clean: a shorter run must not leave PDFs from a longer one behind, or the zip
+    // ships records the operator never approved.
+    rmSync(merge.outputDir, { recursive: true, force: true });
+    mkdirSync(merge.outputDir, { recursive: true });
+    merge.pdfs = [];
+
+    const pidPath = join(OUTPUT_DIR, `merge-word-${job.id.slice(0, 8)}.pid`);
+    rmSync(pidPath, { force: true });
+    const { scriptPath, rows } = writeMergeScript(job.id, merge, { limit, splitPerRecord, pidPath });
+
+    const total = limit > 0 ? Math.min(limit, rows) : rows;
+    job.mergeRun = { total, done: 0, limit: limit || undefined, startedAt: new Date() };
+
+    void (async () => {
+      try {
+        const run = await runWordMerge(scriptPath, { pidPath }, (done) => {
+          if (job.mergeRun) job.mergeRun.done = done;
+        });
+        merge.pdfs = readdirSync(merge.outputDir)
+          .filter((n) => n.toLowerCase().endsWith('.pdf'))
+          .sort()
+          .map((n) => join(merge.outputDir, n));
+        merge.lastRunAt = new Date();
+        merge.lastRunLimit = limit || undefined;
+
+        if (job.mergeRun) {
+          job.mergeRun.done = merge.pdfs.length;
+          job.mergeRun.finishedAt = new Date();
+        }
+        logStep(
+          job,
+          'mailmerge',
+          `${merge.pdfs.length} PDF(s) from ${merge.sheetName}` +
+            (limit ? ` (first ${limit} of ${run.available})` : ` (${run.available} records)`),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (job.mergeRun) {
+          job.mergeRun.error = message;
+          job.mergeRun.finishedAt = new Date();
+        }
+        logStep(job, 'mailmerge', `failed: ${message}`);
+      }
+    })();
+
+    res.status(202).json(jobSummary(job));
+  } catch (error) {
+    fail(res, error);
+  }
+});
+
+/**
+ * GET /api/jobs/:id/mailmerge/script — the PowerShell script, to run on a PC with Word.
+ *
+ * Generated on demand rather than left over from a run: this is the escape hatch for a
+ * machine that cannot produce PDFs itself, where no run will ever have happened.
+ */
+router.get('/jobs/:id/mailmerge/script', (req, res) => {
+  try {
+    const job = requireJob(String(req.params.id));
+    if (!job.merge) throw new Error('Set up the merge first — upload the template');
+    const { scriptPath } = writeMergeScript(job.id, job.merge, {
+      limit: 0,
+      splitPerRecord: true,
+    });
+    res.download(scriptPath, 'run-mail-merge.ps1');
+  } catch (error) {
+    fail(res, error, 404);
+  }
+});
+
+/** GET /api/jobs/:id/mailmerge/pdf/:index — one PDF inline, for the single-record check. */
+router.get('/jobs/:id/mailmerge/pdf/:index', (req, res) => {
+  try {
+    const job = requireJob(String(req.params.id));
+    const pdfs = job.merge?.pdfs ?? [];
+    const index = Number(req.params.index);
+    const path = pdfs[index];
+    if (!path || !existsSync(path)) throw new Error('No such PDF — run the merge first');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${basename(path)}"`);
+    res.sendFile(path);
+  } catch (error) {
+    fail(res, error, 404);
+  }
+});
+
+/** GET /api/jobs/:id/mailmerge/pdfs — every PDF from the last run, zipped. */
+router.get('/jobs/:id/mailmerge/pdfs', async (req, res) => {
+  try {
+    const job = requireJob(String(req.params.id));
+    const pdfs = (job.merge?.pdfs ?? []).filter((p) => existsSync(p));
+    if (pdfs.length === 0) throw new Error('No PDFs yet — run the merge first');
+
+    const { default: JSZip } = await import('jszip');
+    const zip = new JSZip();
+    for (const path of pdfs) zip.file(basename(path), readFileSync(path));
+    const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="propco-letters-${job.id.slice(0, 8)}.zip"`,
+    );
+    res.send(buffer);
+  } catch (error) {
+    fail(res, error, 404);
+  }
+});
+
+/** Write the merge script and its PDF-name list, and report how many records are in play. */
+function writeMergeScript(
+  jobId: string,
+  merge: NonNullable<import('./store.js').Job['merge']>,
+  options: { limit: number; splitPerRecord: boolean; pidPath?: string },
+): { scriptPath: string; rows: number } {
+  const { headers, rows } = readMergeTable(merge.dataPath, merge.sheetName);
+  if (rows.length === 0) throw new Error(`Sheet "${merge.sheetName}" has no rows to merge`);
+
+  const labelsPath = join(OUTPUT_DIR, `merge-labels-${jobId.slice(0, 8)}.txt`);
+  writeFileSync(labelsPath, mergeLabels(headers, rows).join('\n'), 'utf8');
+
+  const scriptPath = join(OUTPUT_DIR, `merge-${jobId.slice(0, 8)}.ps1`);
+  writeFileSync(
+    scriptPath,
+    generateWordMergeScript({
+      templatePath: merge.templatePath,
+      dataPath: merge.dataPath,
+      sheetName: merge.sheetName,
+      outputDir: merge.outputDir,
+      labelsPath,
+      pidPath: options.pidPath,
+      splitPerRecord: options.splitPerRecord,
+      limit: options.limit,
+    }),
+    'utf8',
+  );
+  return { scriptPath, rows: rows.length };
+}
+
+/** Read a merge data source exactly the way Word's OLEDB driver will: header on row 1. */
+function readMergeTable(path: string, sheetName: string) {
+  const { wb, names } = readWorkbookSheets(path);
+  if (!names.includes(sheetName)) {
+    throw new Error(`Sheet "${sheetName}" not found. This file has: ${names.join(', ')}`);
+  }
+  const table = sheetToTable(wb, sheetName, 1);
+  // Word skips nothing, but a sheet exported from Google Sheets carries trailing blanks;
+  // dropping them here keeps the label list aligned with the records Word will see.
+  const rows = table.rows.filter((cells) => cells.some((c) => squash(c).length > 0));
+  return { headers: table.headers, rows };
+}
+
+/**
+ * Pick the recipient tab out of an uploaded workbook. Prefer the name this tool writes,
+ * then any sheet carrying an address column — the operator may have renamed the tab or
+ * pasted the rows into a fresh file. Both channels spell it "Full Address" or
+ * "Full_Address", which normalise to the same key.
+ */
+function pickMergeSheet(path: string, preferred: string): string {
+  const { wb, names } = readWorkbookSheets(path);
+  if (names.includes(preferred)) return preferred;
+
+  for (const name of names) {
+    try {
+      const keys = sheetToTable(wb, name, 1).headers.map((h) => normKey(h).replace(/[^A-Z0-9]/g, ''));
+      if (keys.includes('FULLADDRESS')) return name;
+    } catch {
+      // A sheet we cannot read is simply not a candidate.
+    }
+  }
+  return names[0];
+}
+
+/** Name each PDF after its recipient. Falls back through the columns most likely present. */
+function mergeLabels(headers: string[], rows: unknown[][]): string[] {
+  const index = (candidates: string[]) => {
+    const keys = headers.map((h) => normKey(h).replace(/[^A-Z0-9]/g, ''));
+    for (const c of candidates) {
+      const i = keys.indexOf(c);
+      if (i >= 0) return i;
+    }
+    return -1;
+  };
+  const addressCol = index(['FULLADDRESS', 'ADDRESS', 'PROPERTYADDRESS']);
+  const ownerCol = index(['REGISTEREDPROPRIETOR', 'OWNERNAME', 'OWNER']);
+
+  return rows.map((cells, i) => {
+    const address = addressCol >= 0 ? squash(cells[addressCol]) : '';
+    const owner = ownerCol >= 0 ? squash(cells[ownerCol]) : '';
+    return address || owner || `record-${i + 1}`;
+  });
+}
 
 /** Pull the institutions-to-avoid list out of the uploaded workbook, if it has one. */
 /**

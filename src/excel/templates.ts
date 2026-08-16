@@ -521,13 +521,39 @@ function textRun(text: string): string {
 }
 
 /**
+ * Picture switches for the fields that are not text.
+ *
+ * Without one, Word prints whatever the data source hands over: an Excel date arrives
+ * through OLEDB as "9/1/2026 12:00:00 PM" and a price as "11000000". Both are wrong on a
+ * letter and neither is visible in a merge-field name check — the field resolves, it just
+ * resolves ugly. The switch has to live in the template, so it belongs here.
+ */
+const FIELD_FORMAT: Record<string, string> = {
+  // Figment writes dates as DD MMM YYYY.
+  Mail_Date: '\\@ "dd MMM yyyy"',
+  Valid_Date: '\\@ "dd MMM yyyy"',
+  Comp_1_Date: '\\@ "dd MMM yyyy"',
+  Comp_2_Date: '\\@ "dd MMM yyyy"',
+  'Updated Date': '\\@ "dd MMM yyyy"',
+  'Date Responded': '\\@ "dd MMM yyyy"',
+  // Prices are always whole dollars; the S$ is typed in the template beside the field.
+  minimum_Price: '\\# "#,##0"',
+  higher_Price: '\\# "#,##0"',
+  Comp_1: '\\# "#,##0"',
+  Comp_2: '\\# "#,##0"',
+};
+
+/**
  * A complete simple field, which Word shows as «Field_Name» and merges properly.
  * The name is always quoted — Word requires it for names containing spaces, such as the
  * postcard sheet's "Owner Name", and tolerates it for the rest.
  */
 function mergeFieldRun(name: string): string {
+  // The switch carries its own quotes, which have to survive as an XML attribute value.
+  const format = FIELD_FORMAT[name];
+  const instr = ` MERGEFIELD &quot;${xmlEscape(name)}&quot; ${format ? `${xmlEscape(format)} ` : ''}\\* MERGEFORMAT `;
   return (
-    `<w:fldSimple w:instr=" MERGEFIELD &quot;${xmlEscape(name)}&quot; \\* MERGEFORMAT ">` +
+    `<w:fldSimple w:instr="${instr}">` +
     `<w:r><w:t>«${xmlEscape(name)}»</w:t></w:r>` +
     `</w:fldSimple>`
   );

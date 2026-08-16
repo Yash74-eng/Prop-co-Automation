@@ -19,6 +19,8 @@ Start the app first (`Run PropCo.bat`, or `npm start`); everything here talks to
 | `e2e-bizfile-live.mjs <jobId> [limit]` | Async BizFile run: expects 202, polls progress, reports the verdict tally. |
 | `e2e-bizfile-upload.mjs <jobId> <tmp>` | The BizFile export path, exercising every verdict branch. |
 | `e2e-crosscheck.mjs` | Calls the Claude cross-check directly on two synthetic rows — isolates the API call from the route. |
+| `e2e-mailmerge-setup.mjs <out>` | Template validation, the wrong-template catch, and the script escape hatch. Needs no Word. |
+| `e2e-mailmerge.mjs <out-prefix>` | The full path including PDFs: test one, run all, zip. Needs Word **and an activated Office**. |
 
 ## Diagnostics
 

@@ -193,16 +193,19 @@ input[type='file'] {
 .check input { margin-top: 3px; flex: 0 0 auto; }
 .check span small { display: block; color: var(--muted); font-size: 12px; line-height: 1.45; }
 
-button {
+/* Downloads are anchors, not buttons — a real href survives a middle-click and lets the
+   browser do the saving. They still have to look like the buttons beside them. */
+button, a.button {
   font: inherit; font-size: 14px; font-weight: 600; padding: 9px 15px;
   border-radius: var(--radius-sm); border: 1px solid var(--accent);
   background: var(--accent); color: var(--accent-ink); cursor: pointer;
   display: inline-flex; align-items: center; gap: 7px;
 }
-button:hover:not(:disabled) { filter: brightness(1.06); }
-button.secondary { background: var(--panel); color: var(--accent); }
+a.button { text-decoration: none; }
+button:hover:not(:disabled), a.button:hover { filter: brightness(1.06); }
+button.secondary, a.button.secondary { background: var(--panel); color: var(--accent); }
 button.ghost { background: transparent; color: var(--ink-soft); border-color: var(--line-strong); font-weight: 500; }
-button.tiny { font-size: 12px; padding: 5px 10px; }
+button.tiny, a.button.tiny { font-size: 12px; padding: 5px 10px; }
 button:disabled { opacity: .45; cursor: not-allowed; filter: none; }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
 

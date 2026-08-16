@@ -43,6 +43,29 @@ export interface JobSummary {
     severities: Record<string, number>;
     errors: string[];
   } | null;
+  /** The merge setup: which template, which sheet, and what the last run produced. */
+  merge: {
+    templateName: string;
+    dataName: string;
+    dataIsUpload: boolean;
+    sheetName: string;
+    dataRows: number;
+    check: MergeFieldCheck;
+    pdfCount: number;
+    pdfNames: string[];
+    lastRunAt?: string;
+    lastRunLimit?: number;
+  } | null;
+  /** Progress of an in-flight merge; one Word document per recipient takes minutes. */
+  mergeRun: {
+    total: number;
+    done: number;
+    limit?: number;
+    startedAt: string;
+    finishedAt?: string;
+    error?: string;
+    running: boolean;
+  } | null;
   log: { at: string; step: string; message: string }[];
 }
 
@@ -96,18 +119,17 @@ export interface Health {
   anthropicKey: boolean;
   bizfileEnabled: boolean;
   model: string;
+  /** False means this machine cannot render PDFs — no Word, unactivated Office, or not Windows. */
+  wordAvailable: boolean;
+  wordReason: string | null;
 }
 
-export interface MergeCheck {
-  check: {
-    templateFields: string[];
-    missingInSheet: string[];
-    unusedInTemplate: string[];
-    ok: boolean;
-  };
-  scriptPath: string;
-  sheetName: string;
-  command: string;
+export interface MergeFieldCheck {
+  templateFields: string[];
+  sheetHeaders: string[];
+  missingInSheet: string[];
+  unusedInTemplate: string[];
+  ok: boolean;
 }
 
 async function handle<T>(response: Response): Promise<T> {
@@ -222,11 +244,20 @@ export const api = {
       handle<JobSummary & { findings: Record<string, unknown>[] }>,
     ),
 
-  mailmerge: (id: string, file: File, splitPerRecord: boolean) =>
+  /** Set up the merge: the template, and optionally the operator's own edited workbook. */
+  mailmerge: (id: string, template: File, data?: File) =>
     fetch(`/api/jobs/${id}/mailmerge`, {
       method: 'POST',
-      body: form({ file, splitPerRecord: String(splitPerRecord) }),
-    }).then(handle<MergeCheck>),
+      body: form({ file: template, data }),
+    }).then(handle<JobSummary>),
+
+  /** Drive Word and export PDFs. `limit: 1` proves one PDF before committing to the run. */
+  mailmergeRun: (id: string, opts: { limit?: number; splitPerRecord?: boolean } = {}) =>
+    fetch(`/api/jobs/${id}/mailmerge/run`, json(opts)).then(handle<JobSummary>),
+
+  mailmergePdfUrl: (id: string, index: number) => `/api/jobs/${id}/mailmerge/pdf/${index}`,
+  mailmergeZipUrl: (id: string) => `/api/jobs/${id}/mailmerge/pdfs`,
+  mailmergeScriptUrl: (id: string) => `/api/jobs/${id}/mailmerge/script`,
 
   downloadUrl: (id: string) => `/api/jobs/${id}/download`,
 };
