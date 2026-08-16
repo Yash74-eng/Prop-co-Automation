@@ -89,11 +89,30 @@ const LAWYER_LETTER_INSTRUCTIONS = `You are checking rows of a mail-merge sheet 
 
 Check each record for these specific problems and report only real ones:
 
-1. Full_Address — must be a deliverable Singapore address: house number(s), street, then "SINGAPORE" and a 6-digit postal code. Merged addresses use " / " between house numbers and collapse postal codes to the first full code plus the last two digits of the others (e.g. "27 / 29 CLUB STREET SINGAPORE 069413 / 14"). Separate streets are joined with "; ". Flag leftover conservation-area text, missing postal codes, duplicated street names, or a merge that reads as nonsense.
+1. Full_Address — the property being written about. It is correct when it has house number(s), a street name, then "SINGAPORE" and a 6-digit postal code.
 
-2. Registered_Proprietor — must read as a name that can be printed on an envelope. Flag: text that is a placeholder rather than a name; a name that still contains an alias in brackets; the same person repeated; a company that reads like a statutory board, temple, clan association, town council or management corporation (those should not receive an offer letter); a string so long it will not fit an envelope.
+   These forms are all correct — do not flag them:
+   - Merged house numbers: " / " between them, with postal codes collapsed to the first full code plus the last two digits of the others, e.g. "27 / 29 CLUB STREET SINGAPORE 069413 / 14".
+   - Separate streets joined with "; ".
+   - Letter suffixes on house numbers, e.g. "271, 271A GEYLANG ROAD".
+   - A unit number such as "#01-05".
 
-3. Registered_Proprietor_mailing_address — must be a mailable address. Flag missing postal codes, obvious truncation, or boilerplate text instead of an address.
+   Flag it when: there is no 6-digit postal code, or a code that is not 6 digits; there is no house number at all, only a street; leftover conservation-area or estate boilerplate is still in the text ("... CONSERVATION AREA", "... INDUSTRIAL ESTATE"); the same street name is repeated within the one address; the merge has produced something that does not read as a real address; or the text is truncated.
+
+2. Registered_Proprietor — must read as a name that can be printed on an envelope.
+
+   Do NOT flag any of the following. They are all correct and expected:
+   - A company. Most owners here are companies — PTE. LTD., PTE LTD, PRIVATE LIMITED, LLP, LIMITED, (S) PTE LTD and similar are normal, not problems.
+   - Several owners in one cell. Co-owners are deliberately joined with "&" (e.g. "TAN AH KOW & LIM BEE HOON"), and one owner's several properties are joined with "/". Multiple names is the intended output, never a defect.
+   - "Owners of ___" — the deliberate collapse used when a property has more owners than will fit.
+   - A long name, unless it is so long it plainly cannot be printed on an envelope.
+   - A name you simply do not recognise. Unfamiliar is not wrong.
+
+   Only flag: a value that is not a name at all (a placeholder, a number, boilerplate, an address in the name field); a name that still carries an un-stripped alias in brackets or an "Alias :" prefix; or an owner that is a statutory board, temple, clan association, town council or management corporation, since those should not receive an offer letter.
+
+3. Registered_Proprietor_mailing_address — this is where the letter is posted, so judge it as a postal address and nothing else. It is correct when it has a building or house number, a street name, and "SINGAPORE" followed by a 6-digit postal code. A unit number such as "#03-01" is fine and expected. A merged address using " / " or "; " is fine.
+
+   Flag it when: there is no postal code, or the postal code is not 6 digits; there is no building or house number, so the postman has a street but no address on it; the text is boilerplate rather than an address ("STRATA LOT", "N/A", "-", a land-lot reference); it is obviously truncated mid-word or mid-number; it is an overseas address with no Singapore postal code; or the same street appears twice in a way that reads as a bad merge.
 
 4. minimum_Price / higher_Price — must both be present, minimum below higher, and plausible for a Singapore shophouse (roughly S$1m to S$40m). Flag a blank pair, an inverted pair, or a figure that does not fit the Neighbourhood and Land Use on the row.
 
@@ -109,11 +128,19 @@ const POSTCARD_INSTRUCTIONS = `You are checking rows of a mail-merge sheet for F
 
 Check each record for these specific problems and report only real ones:
 
-1. Full Address — must be a deliverable Singapore address: house number(s), street, then "SINGAPORE" and a 6-digit postal code. Merged addresses use " / " between house numbers and collapse postal codes; separate streets are joined with "; ". Flag leftover conservation-area text, missing postal codes or a merge that reads as nonsense.
+1. Full Address — the property. Correct when it has house number(s), a street, then "SINGAPORE" and a 6-digit postal code. Merged house numbers use " / " with collapsed postal codes; separate streets are joined with "; "; letter suffixes ("271, 271A") and unit numbers ("#01-05") are all fine — do not flag any of those.
 
-2. Owner Name — must read as a name that can be printed on a postcard. Flag placeholders, un-stripped aliases in brackets, repeated names, statutory boards / temples / clan associations / management corporations, or a string too long for a postcard.
+   Flag it when: there is no 6-digit postal code, or one that is not 6 digits; there is no house number, only a street; leftover conservation-area or estate boilerplate is still present; the same street repeats within the address; or the text is truncated.
 
-3. Owner Address — must be a mailable Singapore address. Flag missing postal codes, truncation, or boilerplate instead of an address.
+2. Owner Name — must read as a name that can be printed on a postcard.
+
+   Do NOT flag: a company (PTE. LTD., PTE LTD, PRIVATE LIMITED, LLP and similar are normal — most owners are companies); several owners joined with "&" or properties joined with "/", which is the intended output; "Owners of ___"; or a name you simply do not recognise.
+
+   Only flag: a value that is not a name at all (placeholder, number, boilerplate, an address in the name field); an un-stripped alias in brackets or an "Alias :" prefix; a statutory board, temple, clan association, town council or management corporation; or a name so long it plainly will not fit on a postcard.
+
+3. Owner Address — where the postcard is posted. Correct when it has a building or house number, a street, and "SINGAPORE" plus a 6-digit postal code; a unit number is fine.
+
+   Flag it when: there is no postal code or it is not 6 digits; there is no building or house number; the text is boilerplate ("STRATA LOT", "N/A", "-"); it is truncated; or it is overseas with no Singapore postal code.
 
 4. Neighbourhood / Land Use — flag a value that contradicts the address (e.g. a Geylang address labelled D1).
 
