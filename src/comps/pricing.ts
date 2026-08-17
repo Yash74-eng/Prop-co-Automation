@@ -2,18 +2,18 @@
  * Turning comparables into the two numbers that go in the letter.
  *
  * The previous team set `minimum_Price` and `higher_Price` by discussion, which makes the
- * offer hard to defend and impossible to reproduce. These are formulas over the selected
- * comparables instead, so the same workbook and the same settings always produce the same
- * range, and the Comments column can state how it was derived.
+ * offer hard to defend and impossible to reproduce. `figment-band` is the agreed formula
+ * that replaces that meeting; it is the default, and it reads the same two comparables
+ * that get printed in the letter, so the letter and the arithmetic can never disagree.
  *
- * NOTE: which formula Figment wants is still an open commercial decision — see the
- * options below. `comps-psf-band` is the default because it is the one that adjusts for
- * the subject property's own size; nothing here is a valuation opinion, and every row
- * still carries the derivation for a human to accept or override.
+ * The other methods are kept for comparison — nothing here is a valuation opinion, and
+ * every row carries its derivation in Comments for a human to accept or override.
  */
 import { Transaction } from './marketWatch.js';
 
 export type PricingMethod =
+  /** The agreed Figment band off the two printed comparables. */
+  | 'figment-band'
   /** Median comp $psf x subject GFA, then a band either side. */
   | 'comps-psf-band'
   /** The comps' own price range, low comp to high comp, untouched. */
@@ -29,13 +29,13 @@ export interface PricingOptions {
   lowerBand: number;
   /** Fraction above the anchor for higher_Price, e.g. 0.10 = 10% above. */
   upperBand: number;
-  /** Round both figures to this increment. */
+  /** Round both figures to this increment. Not used by `figment-band`, which sets its own. */
   rounding: number;
 }
 
 export function defaultPricing(over: Partial<PricingOptions> = {}): PricingOptions {
   return {
-    method: 'comps-psf-band',
+    method: 'figment-band',
     lowerBand: 0.05,
     upperBand: 0.1,
     rounding: 50_000,
@@ -60,6 +60,67 @@ const median = (values: number[]): number | undefined => {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 };
 
+/* ------------------------------------------------------------------ figment-band -- */
+
+/**
+ * The agreed formula, as supplied for the Google Sheet:
+ *
+ *   higher_Price  = MROUND(1.05*MAX($G2,$J2), 250000)
+ *   minimum_Price = LET(
+ *     ceil, MROUND(1.05*MAX($G2,$J2), 250000),
+ *     raw,  FLOOR(0.80*MIN($G2,$J2), 250000),
+ *     MEDIAN(raw, CEILING(ceil/1.60, 250000), FLOOR(ceil/1.35, 250000)))
+ *
+ * G and J are the two comparable prices — the same two the letter prints as Comp_1 and
+ * Comp_2. In words: the top of the range is 5% over the better comparable; the bottom
+ * starts at a 20% haircut off the weaker one and is then clamped so the range never
+ * implies a discount outside 1.35x-1.60x of the top. MEDIAN of the raw figure and the two
+ * bounds is what does the clamping — it returns `raw` when it already sits inside the
+ * band, and the nearer bound when it does not.
+ *
+ * Everything lands on a 250,000 multiple because that is the granularity the offer is
+ * actually negotiated at.
+ */
+const BAND = {
+  step: 250_000,
+  /** Top of the range, over the better comparable. */
+  topUplift: 1.05,
+  /** Opening haircut off the weaker comparable. */
+  bottomHaircut: 0.8,
+  /** The bottom may never be further below the top than this ... */
+  spreadWide: 1.6,
+  /** ... nor closer to it than this. */
+  spreadTight: 1.35,
+};
+
+const mround = (v: number, f: number) => Math.round(v / f) * f;
+const floorTo = (v: number, f: number) => Math.floor(v / f) * f;
+const ceilTo = (v: number, f: number) => Math.ceil(v / f) * f;
+const mid3 = (a: number, b: number, c: number) => [a, b, c].sort((x, y) => x - y)[1];
+
+export interface FigmentBand {
+  minimumPrice: number;
+  higherPrice: number;
+}
+
+/**
+ * Apply the agreed formula to the comparable prices. Blank comparables are ignored the
+ * way MAX and MIN ignore blank cells, so one comparable prices the row off itself.
+ */
+export function figmentBand(compPrices: number[]): FigmentBand | undefined {
+  const prices = compPrices.filter((p) => typeof p === 'number' && Number.isFinite(p) && p > 0);
+  if (prices.length === 0) return undefined;
+
+  const higherPrice = mround(BAND.topUplift * Math.max(...prices), BAND.step);
+  const raw = floorTo(BAND.bottomHaircut * Math.min(...prices), BAND.step);
+  const minimumPrice = mid3(
+    raw,
+    ceilTo(higherPrice / BAND.spreadWide, BAND.step),
+    floorTo(higherPrice / BAND.spreadTight, BAND.step),
+  );
+  return { minimumPrice, higherPrice };
+}
+
 /**
  * Price a property from its comparables.
  *
@@ -80,6 +141,23 @@ export function priceFromComps(
 
   const prices = comps.map((c) => c.price).filter((p): p is number => typeof p === 'number');
   const psfs = comps.map((c) => c.psf).filter((p): p is number => typeof p === 'number');
+
+  if (options.method === 'figment-band') {
+    // Only the comparables the letter actually prints. Pricing off a comp the reader
+    // cannot see would make the range unarguable in exactly the wrong way.
+    const printed = comps.slice(0, 2).map((c) => c.price).filter((p): p is number => typeof p === 'number');
+    const band = figmentBand(printed);
+    if (!band) return { basis: 'Comparables carry no prices' };
+    const money = (n: number) => `S$${n.toLocaleString('en-SG')}`;
+    return {
+      minimumPrice: band.minimumPrice,
+      higherPrice: band.higherPrice,
+      basis:
+        `Priced off ${printed.length === 1 ? 'the comparable' : 'both comparables'} ` +
+        `(${printed.map(money).join(', ')}): top = 1.05 x highest, bottom = 0.80 x lowest ` +
+        `held within 1.35-1.60x of the top, all to the nearest ${money(BAND.step)}`,
+    };
+  }
 
   if (options.method === 'comps-range') {
     if (prices.length === 0) return { basis: 'Comparables carry no prices' };

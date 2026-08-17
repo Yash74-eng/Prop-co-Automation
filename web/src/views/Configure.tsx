@@ -333,6 +333,29 @@ export function ConfigureView({
         </div>
       </Card>
 
+      {isLetter ? (
+        <Card
+          title="How the offer range is set"
+          hint="Fixed formula off the two comparables printed in the letter — no meeting, same answer every time."
+          flat
+        >
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13.5, lineHeight: 1.8 }}>
+            <li>
+              <b>higher_Price</b> — 1.05 × the <i>higher</i> comparable, to the nearest S$250,000.
+            </li>
+            <li>
+              <b>minimum_Price</b> — 0.80 × the <i>lower</i> comparable, then held inside 1.35× to
+              1.60× below the higher price, to the nearest S$250,000.
+            </li>
+          </ul>
+          <p className="hint" style={{ marginTop: 10 }}>
+            The clamp is what stops two comparables that are far apart producing a range nobody
+            would send. Every row records its own arithmetic in <code>Comments</code>, so any figure
+            in the letter can be traced back to the two comps beside it.
+          </p>
+        </Card>
+      ) : null}
+
       <div className="actions">
         <button onClick={() => void run()} disabled={!!busy}>
           {busy === 'Generate' ? <Spinner /> : null}

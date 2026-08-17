@@ -253,8 +253,14 @@ test('a district with no transactions yields no comps rather than borrowing anot
 const twoComps = (): Transaction[] =>
   selectComps(d14(), { postalCode: '419123' }, defaultCompSelection(), AS_OF).comps;
 
+// These two cover the psf method, which is no longer the default — figment-band is.
+// Name it explicitly rather than leaning on defaultPricing(); see test/pricing.test.ts.
 test('psf band prices off the subject GFA and states its working', () => {
-  const priced = priceFromComps(twoComps(), { gfaSqft: 1500 }, defaultPricing());
+  const priced = priceFromComps(
+    twoComps(),
+    { gfaSqft: 1500 },
+    defaultPricing({ method: 'comps-psf-band' }),
+  );
   assert.ok(priced.minimumPrice && priced.higherPrice);
   assert.ok(priced.minimumPrice < priced.higherPrice);
   assert.match(priced.basis, /psf/);
@@ -262,7 +268,7 @@ test('psf band prices off the subject GFA and states its working', () => {
 });
 
 test('a missing GFA falls back to the median price rather than losing the row', () => {
-  const priced = priceFromComps(twoComps(), {}, defaultPricing());
+  const priced = priceFromComps(twoComps(), {}, defaultPricing({ method: 'comps-psf-band' }));
   assert.ok(priced.minimumPrice && priced.higherPrice);
   assert.match(priced.basis, /no GFA/i);
 });

@@ -266,7 +266,7 @@ router.post('/jobs/:id/run', async (req, res) => {
         maxAgeMonths: numberOr(body.compsMaxAgeMonths, 36),
       }),
       pricing: defaultPricing({
-        method: body.pricingMethod ?? 'comps-psf-band',
+        method: body.pricingMethod ?? 'figment-band',
         lowerBand: numberOr(body.pricingLowerBand, 0.05),
         upperBand: numberOr(body.pricingUpperBand, 0.1),
         rounding: numberOr(body.derivedRounding, 50_000),
