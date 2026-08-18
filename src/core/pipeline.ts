@@ -28,6 +28,7 @@ import {
 } from './types.js';
 import { classifyOutreach, outreachValue } from './mainDatabase.js';
 import {
+  cleanPrintable,
   isStrataPlaceholder,
   looksOverseas,
   mailingAddressKey,
@@ -204,8 +205,22 @@ export function runPipeline(
     }
 
     for (const owner of namedOwners) {
-      const cls = classifyName(owner.name, { institutions, developerNames });
+      // Scrub before classifying. A company name pasted off a website arrives as
+      // "SOMEWHERE™ PTE LTD" and would otherwise print that way on the envelope; a
+      // zero-width character in one copy of a name also splits one owner into two.
+      const scrubbedName = cleanPrintable(owner.name);
+      const cls = classifyName(scrubbedName.text, { institutions, developerNames });
       const notes: string[] = [];
+      if (scrubbedName.removed.length) {
+        flags.push({
+          sourceRow: row.sourceRow,
+          address: row.address,
+          ownerName: scrubbedName.text,
+          flag: 'Owner name contained characters that cannot be printed',
+          detail: `Removed: ${scrubbedName.removed.join(', ')}. Now reads "${scrubbedName.text}"`,
+          severity: 'warn',
+        });
+      }
 
       if (cls.isStrataPlaceholder) {
         exclusions.push({
@@ -248,7 +263,32 @@ export function runPipeline(
 
       // A corrected address has to be applied here, before dedupe: merging keys on the
       // mailing address, so patching the finished sheet would leave the groups wrong.
-      const originalAddress = squash(owner.address);
+      //
+      // Scrub printing junk at the same point and for the same reason: the mailing
+      // address is a dedupe key, so a trademark mark or a zero-width character in one
+      // copy of an address splits a recipient into two letters.
+      const scrubbedAddress = cleanPrintable(owner.address);
+      const originalAddress = scrubbedAddress.text;
+      if (scrubbedAddress.removed.length) {
+        flags.push({
+          sourceRow: row.sourceRow,
+          address: row.address,
+          ownerName: squash(owner.name),
+          flag: 'Mailing address contained characters that cannot be printed',
+          detail: `Removed: ${scrubbedAddress.removed.join(', ')}. Now reads "${originalAddress}"`,
+          severity: 'warn',
+        });
+      }
+      if (property.scrubbed?.length) {
+        flags.push({
+          sourceRow: row.sourceRow,
+          address: row.address,
+          ownerName: squash(owner.name),
+          flag: 'Property address contained characters that cannot be printed',
+          detail: `Removed: ${property.scrubbed.join(', ')}. Now reads "${property.raw}"`,
+          severity: 'warn',
+        });
+      }
       const override =
         options.ownerAddressOverrides?.[normKey(cls.cleaned)] ??
         options.ownerAddressOverrides?.[normKey(squash(owner.name))];

@@ -9,7 +9,7 @@ import ExcelJS from 'exceljs';
 import { DedupeAuditEntry } from '../core/dedupe.js';
 import { LAWYER_LETTER_HEADERS, POSTCARD_HEADERS } from '../core/pipeline.js';
 import { CompsRecord, PipelineResult } from '../core/types.js';
-import { formatDate, squash } from '../core/text.js';
+import { formatDate, normKey, squash } from '../core/text.js';
 import { SheetTable } from '../core/mainDatabase.js';
 
 export const SHEET_NAMES = {
@@ -389,6 +389,128 @@ export async function appendSheet(
   addTable(wb, sheetName, headers, rows);
   await wb.xlsx.writeFile(workbookPath);
   return wb;
+}
+
+/** Columns the BizFile pass adds to a deliverable sheet, in order. */
+export const BIZFILE_INLINE_HEADERS = [
+  'BizFile Verdict',
+  'BizFile Registered Address',
+  'Corrected Address',
+];
+
+/**
+ * Put the BizFile result next to the address it is about, on the sheet being sent.
+ *
+ * The BizFile Verification sheet already holds every verdict, but reading it means
+ * cross-referencing owner names between two tabs — so in practice a mismatch gets found
+ * at the printer instead of at review. These three columns sit on the deliverable itself:
+ * the verdict, what ACRA actually has, and an empty column to type the address to use.
+ *
+ * `Corrected Address` is deliberately blank rather than pre-filled with ACRA's address.
+ * Pre-filling would turn "ACRA disagrees" into "the tool already decided", and the whole
+ * point of the column is that a human looks. Whatever is typed there is picked up by the
+ * Address Overrides path when the workbook is uploaded back.
+ *
+ * Any `Corrected Address` values already in the sheet are preserved — a second BizFile
+ * run must not discard corrections typed after the first one.
+ */
+export async function annotateWithBizFile(
+  workbookPath: string,
+  sheetName: string,
+  ownerColumn: string,
+  addressColumn: string,
+  verifications: {
+    ownerName: string;
+    mailingAddressInSheet: string;
+    bizfileAddress?: string;
+    verdict: string;
+    detail: string;
+  }[],
+): Promise<{ annotated: number; matched: number }> {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.readFile(workbookPath);
+  const sheet = wb.getWorksheet(sheetName);
+  if (!sheet) return { annotated: 0, matched: 0 };
+
+  const headerRow = sheet.getRow(1);
+  const headers: string[] = [];
+  headerRow.eachCell({ includeEmpty: true }, (cell, col) => {
+    headers[col - 1] = squash(cell.value);
+  });
+
+  // Letters and digits only, so "Registered_Proprietor" and "Registered Proprietor" agree.
+  const key = (h: string) => normKey(h).replace(/[^A-Z0-9]/g, '');
+  const indexOfHeader = (name: string) => headers.findIndex((h) => key(h ?? '') === key(name));
+  const ownerCol = indexOfHeader(ownerColumn);
+  const addressCol = indexOfHeader(addressColumn);
+  if (ownerCol < 0 || addressCol < 0) return { annotated: 0, matched: 0 };
+
+  // Index the verdicts by owner + address, then by owner alone. One owner can appear on
+  // several rows with different mailing addresses, so the exact pair has to win.
+  const byPair = new Map<string, (typeof verifications)[number]>();
+  const byOwner = new Map<string, (typeof verifications)[number]>();
+  for (const v of verifications) {
+    const owner = normKey(v.ownerName);
+    byPair.set(`${owner}||${normKey(v.mailingAddressInSheet)}`, v);
+    if (!byOwner.has(owner)) byOwner.set(owner, v);
+  }
+
+  // Reuse the existing columns if this is a re-run, otherwise append them.
+  const cols = BIZFILE_INLINE_HEADERS.map((name) => {
+    const found = indexOfHeader(name);
+    return found >= 0 ? found : headers.push(name) - 1;
+  });
+  BIZFILE_INLINE_HEADERS.forEach((name, i) => {
+    headerRow.getCell(cols[i] + 1).value = name;
+  });
+
+  let matched = 0;
+  let annotated = 0;
+  for (let r = 2; r <= sheet.rowCount; r++) {
+    const row = sheet.getRow(r);
+    const owner = normKey(squash(row.getCell(ownerCol + 1).value));
+    if (!owner) continue;
+    const address = normKey(squash(row.getCell(addressCol + 1).value));
+    const hit = byPair.get(`${owner}||${address}`) ?? byOwner.get(owner);
+    annotated++;
+    if (!hit) {
+      // Say so rather than leaving it blank: an empty verdict cell reads as "fine".
+      row.getCell(cols[0] + 1).value = 'not checked';
+      row.getCell(cols[1] + 1).value = '';
+      continue;
+    }
+    matched++;
+    row.getCell(cols[0] + 1).value = hit.verdict;
+    row.getCell(cols[1] + 1).value = hit.bizfileAddress ?? '';
+    // Never overwrite a correction someone already typed.
+    const corrected = row.getCell(cols[2] + 1);
+    if (squash(corrected.value) === '') corrected.value = '';
+  }
+
+  styleHeader(sheet);
+  highlightVerdicts(sheet, cols[0] + 1);
+  autoWidth(sheet);
+  await wb.xlsx.writeFile(workbookPath);
+  return { annotated, matched };
+}
+
+/** Colour the verdicts that must not be posted, so they cannot be scrolled past. */
+function highlightVerdicts(sheet: ExcelJS.Worksheet, column: number): void {
+  const RED = 'FFFCE4E4';
+  const AMBER = 'FFFFF4D6';
+  for (let r = 2; r <= sheet.rowCount; r++) {
+    const cell = sheet.getRow(r).getCell(column);
+    const verdict = squash(cell.value).toLowerCase();
+    const fill =
+      verdict === 'mismatch' || verdict === 'entity-inactive'
+        ? RED
+        : verdict === 'not-found' || verdict === 'lookup-failed' || verdict === 'not checked'
+          ? AMBER
+          : undefined;
+    if (fill) {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
+    }
+  }
 }
 
 /**

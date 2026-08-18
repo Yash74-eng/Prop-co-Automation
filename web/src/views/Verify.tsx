@@ -23,11 +23,13 @@ export function VerifyView({ state }: { state: JobState }) {
   const [rerunFile, setRerunFile] = useState<File | null>(null);
   const [rerun, setRerun] = useState<{
     offered: number;
+    typedCorrections?: number;
     applied: number;
     skippedIncomplete: number;
     recipientsBefore: number;
     recipientsAfter: number;
   } | null>(null);
+  const [instructions, setInstructions] = useState<string | null>(null);
 
   const jobId = job?.id;
   useEffect(() => {
@@ -224,17 +226,34 @@ export function VerifyView({ state }: { state: JobState }) {
             Profile export below; it takes priority over the open-data record.
           </Msg>
 
+          <Msg kind="info">
+            <b>Fix them on the sheet itself.</b> Every verified row on{' '}
+            <b>{job.channel === 'lawyer-letter' ? 'Lawyer Letter' : 'Postcards Final'}</b> now
+            carries three extra columns: <code>BizFile Verdict</code>,{' '}
+            <code>BizFile Registered Address</code>, and an empty <code>Corrected Address</code>.
+            Mismatches and inactive entities are shaded red.
+            <br />
+            <span style={{ fontSize: 12.5 }}>
+              Download the workbook, type the address you want into <code>Corrected Address</code>,
+              and upload the same file below. A typed address beats both ACRA and any export — a
+              person looked at that row and decided.
+            </span>
+          </Msg>
+
           <div className="grid">
             <Field
-              label="Updated BizFile export (optional)"
-              hint="Overrides the stored verification. Same columns as the export template."
+              label="Corrected workbook, or an updated BizFile export"
+              hint="Reads your typed Corrected Address column from any sheet, and an export's Registered Office Address."
             >
               <input
                 type="file"
                 accept=".xlsx,.xls,.csv"
                 onChange={(e) => setRerunFile(e.target.files?.[0] ?? null)}
               />
-              <div style={{ marginTop: 8 }}>
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <a className="button secondary tiny" href={api.downloadUrl(job.id)}>
+                  Download the workbook to edit
+                </a>
                 <TemplateLink kind="bizfile" label="BizFile export template" />
               </div>
             </Field>
@@ -243,7 +262,8 @@ export function VerifyView({ state }: { state: JobState }) {
           {rerun ? (
             <Msg kind="ok">
               <b>
-                {rerun.applied} rows updated from {rerun.offered} corrections.
+                {rerun.applied} rows updated from {rerun.offered} corrections
+                {rerun.typedCorrections ? ` (${rerun.typedCorrections} typed by hand)` : ''}.
               </b>{' '}
               Recipients went from {rerun.recipientsBefore.toLocaleString('en-SG')} to{' '}
               {rerun.recipientsAfter.toLocaleString('en-SG')} — merging changes when an address
@@ -328,12 +348,47 @@ export function VerifyView({ state }: { state: JobState }) {
           </Msg>
         ) : null}
 
+        <Field
+          label="Your own instructions for this check — optional"
+          hint="Added on top of the built-in rules. Use it to ask for a check they miss, or to stop one you keep disagreeing with."
+        >
+          <textarea
+            rows={5}
+            value={instructions ?? job.crossCheckInstructions ?? ''}
+            placeholder={
+              'e.g.\n' +
+              'Flag any mailing address that is a shopping-centre unit — those get returned.\n' +
+              'Do not flag prices above S$40m; we do write those.\n' +
+              'Check that Neighbourhood matches the postal district of Full_Address.'
+            }
+            onChange={(e) => setInstructions(e.target.value)}
+            style={{
+              width: '100%',
+              font: 'inherit',
+              fontSize: 13,
+              padding: '8px 10px',
+              borderRadius: 7,
+              border: '1px solid var(--line)',
+              background: 'var(--panel-alt)',
+              color: 'var(--ink)',
+              resize: 'vertical',
+            }}
+          />
+          <p className="hint" style={{ marginTop: 6 }}>
+            These win over the built-in rules wherever the two disagree, and they are written
+            onto the <b>Claude Cross-Check</b> sheet so a later reader can see why a row was or
+            was not flagged.
+          </p>
+        </Field>
+
         <div className="actions">
           <button
             disabled={!!busy || !health?.anthropicKey || ccRun?.running}
             onClick={() =>
               // The server answers 202 and keeps working; useJob polls from here.
-              void guard('Claude cross-check', () => api.crossCheck(job.id, {})).then((r) => {
+              void guard('Claude cross-check', () =>
+                api.crossCheck(job.id, { instructions: instructions ?? job.crossCheckInstructions }),
+              ).then((r) => {
                 if (!r) return;
                 setJob(r);
                 setFindings(r.findings ?? []);
@@ -350,7 +405,10 @@ export function VerifyView({ state }: { state: JobState }) {
             disabled={!!busy || !health?.anthropicKey || ccRun?.running}
             onClick={() =>
               void guard('Claude cross-check', () =>
-                api.crossCheck(job.id, { maxRows: 40 }),
+                api.crossCheck(job.id, {
+                  maxRows: 40,
+                  instructions: instructions ?? job.crossCheckInstructions,
+                }),
               ).then((r) => {
                 if (!r) return;
                 setJob(r);

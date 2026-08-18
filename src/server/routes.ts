@@ -26,7 +26,7 @@ import { parseCompsTable } from '../core/comps.js';
 import { defaultOptions, runPipeline } from '../core/pipeline.js';
 import { findInstitutionsSheetName, loadConfig, parseInstitutionsSheet } from '../core/config.js';
 import { buildWorkbook, SHEET_NAMES, writeWorkbook } from '../excel/write.js';
-import { appendSheet } from '../excel/write.js';
+import { annotateWithBizFile, appendSheet } from '../excel/write.js';
 import {
   ADDRESS_OVERRIDE_HEADERS,
   BIZFILE_COVERAGE_HEADERS,
@@ -35,6 +35,7 @@ import {
   coverageRows,
   csvResolver,
   parseBizFileTable,
+  parseCorrectedAddresses,
   playwrightResolver,
   verificationsToRows,
 } from '../bizfile/resolver.js';
@@ -348,7 +349,8 @@ router.post('/jobs/:id/rerun-addresses', upload.single('file'), async (req, res)
     // override taken from it can replace a postable address with an unpostable one.
     // Refuse those by default rather than quietly degrading the sheet.
     const allowIncomplete = req.body?.allowIncomplete === 'true';
-    const hasBlockNumber = (address: string) => /^\s*\d/.test(address);
+    // "BLK 123", "BLOCK 5", "No. 12" are all postable; only a bare street name is not.
+    const hasBlockNumber = (address: string) => /^\s*(?:BLK|BLOCK|NO\.?)?\s*\d/i.test(address);
 
     const add = (ownerName: string, address: string, source: string) => {
       const name = squash(ownerName);
@@ -378,18 +380,43 @@ router.post('/jobs/:id/rerun-addresses', upload.single('file'), async (req, res)
 
     // An uploaded export wins over the stored verification — it is the newer statement,
     // and a purchased Business Profile carries block and unit that open data does not.
+    let typedCorrections = 0;
     if (req.file) {
       const { wb, names } = readWorkbookSheets(req.file.path);
+
+      // Addresses typed into a "Corrected Address" column. Every sheet is scanned because
+      // that column lives on the deliverable tab, which is not necessarily the first one.
+      const typed: { ownerName: string; address: string; sheet: string }[] = [];
+      for (const name of names) {
+        try {
+          const table = sheetToTable(wb, name, 1);
+          for (const c of parseCorrectedAddresses(table.headers, table.rows)) {
+            typed.push({ ...c, sheet: name });
+          }
+        } catch {
+          // A sheet that will not read is simply not a source of corrections.
+        }
+      }
+
+      // A BizFile / Business Profile export, if that is what was uploaded.
       const table = sheetToTable(wb, squash(req.body?.sheetName) || names[0]);
       const records = parseBizFileTable(table.headers, table.rows);
-      if (records.length === 0) {
+      if (records.length === 0 && typed.length === 0) {
         throw new Error(
-          'No records found in the upload. Expected columns like "Entity Name" and "Registered Office Address".',
+          'Nothing to apply from this upload. Expected either a "Corrected Address" column ' +
+            'beside the owner names, or an export with "Entity Name" and "Registered Office Address".',
         );
       }
       for (const r of records) {
         if (!r.registeredAddress) continue;
         add(r.name, r.registeredAddress, `upload (${req.file.originalname})`);
+      }
+
+      // Applied last, so a hand-typed address beats both ACRA and the export. Someone
+      // looked at this row and decided; that outranks any automatic source.
+      for (const c of typed) {
+        add(c.ownerName, c.address, `typed into "${c.sheet}"`);
+        typedCorrections++;
       }
     }
 
@@ -422,6 +449,7 @@ router.post('/jobs/:id/rerun-addresses', upload.single('file'), async (req, res)
     res.json({
       ...jobSummary(job),
       offered: count,
+      typedCorrections,
       applied: summary.applied,
       skippedIncomplete: skippedIncomplete.length,
       skippedSamples: skippedIncomplete.slice(0, 10),
@@ -510,6 +538,7 @@ async function regenerate(
         runAt: job.bizfile.runAt,
       }),
     );
+    await annotateDeliverable(job, job.bizfile.verifications);
   }
 
   return {
@@ -863,6 +892,18 @@ router.post('/jobs/:id/bizfile', upload.single('file'), async (req, res) => {
               queueTotal: queue.length,
             }),
           );
+          // Put the verdict beside the address it is about, on the sheet being sent.
+          // Cross-referencing two tabs by owner name is how a mismatch gets found at the
+          // printer instead of at review.
+          const inline = await annotateDeliverable(job, verifications);
+          if (inline) {
+            logStep(
+              job,
+              'bizfile',
+              `${SHEET_NAMES[job.result?.channel === 'lawyer-letter' ? 'lawyerLetter' : 'postcardFinal']}: ` +
+                `${inline.matched} of ${inline.annotated} rows carry a verdict inline`,
+            );
+          }
         }
         logStep(job, 'bizfile', `${verifications.length} owners verified via ${resolverName}`);
         if (job.bizfileRun) job.bizfileRun.finishedAt = new Date();
@@ -917,6 +958,11 @@ router.post('/jobs/:id/cross-check', async (req, res) => {
       channel === 'lawyer-letter' ? rows.lawyerLetterRows.length : rows.postcardRows.length,
     );
 
+    // Remembered on the job so a re-run keeps them and the UI can show what was applied.
+    // Capped because they ride in the cached system prefix of every batch.
+    const extraInstructions = squash(req.body?.instructions).slice(0, 4000);
+    job.crossCheckInstructions = extraInstructions || undefined;
+
     // A full sheet is dozens of batches and runs for minutes — well past what a browser
     // will hold a request open for. Start the work, answer 202, and let the UI poll.
     job.crossCheckRun = {
@@ -924,7 +970,12 @@ router.post('/jobs/:id/cross-check', async (req, res) => {
       done: 0,
       startedAt: new Date(),
     };
-    logStep(job, 'cross-check', `started: ${rowCount} rows in ${job.crossCheckRun.total} batches`);
+    logStep(
+      job,
+      'cross-check',
+      `started: ${rowCount} rows in ${job.crossCheckRun.total} batches` +
+        (extraInstructions ? ' with your own instructions added' : ''),
+    );
 
     void (async () => {
       try {
@@ -932,6 +983,7 @@ router.post('/jobs/:id/cross-check', async (req, res) => {
           batchSize,
           concurrency: numberOr(req.body?.concurrency, 3),
           maxRows,
+          extraInstructions,
           onProgress: (done, total) => {
             if (job.crossCheckRun) Object.assign(job.crossCheckRun, { done, total });
           },
@@ -1164,6 +1216,37 @@ router.get('/jobs/:id/mailmerge/pdfs', async (req, res) => {
     fail(res, error, 404);
   }
 });
+
+/**
+ * Add the BizFile verdict columns to whichever sheet this job's channel actually posts:
+ * Postcards Final, or the Lawyer Letter sheet. Both carry an owner name and a mailing
+ * address, and a wrong address costs the same either way.
+ */
+async function annotateDeliverable(
+  job: import('./store.js').Job,
+  verifications: import('../bizfile/types.js').BizFileVerification[],
+): Promise<{ annotated: number; matched: number } | undefined> {
+  if (!job.outputPath || !job.result) return undefined;
+  const letter = job.result.channel === 'lawyer-letter';
+  try {
+    return await annotateWithBizFile(
+      job.outputPath,
+      letter ? SHEET_NAMES.lawyerLetter : SHEET_NAMES.postcardFinal,
+      letter ? 'Registered_Proprietor' : 'Owner Name',
+      letter ? 'Registered_Proprietor_mailing_address' : 'Owner Address',
+      verifications,
+    );
+  } catch (error) {
+    // The evidence sheets are already written; failing to decorate the deliverable must
+    // not lose the run.
+    logStep(
+      job,
+      'bizfile',
+      `could not add verdict columns to the deliverable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return undefined;
+  }
+}
 
 /** Write the merge script and its PDF-name list, and report how many records are in play. */
 function writeMergeScript(

@@ -33,6 +33,8 @@ export interface CrossCheckResult {
   batches: number;
   rowsChecked: number;
   model: string;
+  /** The operator's own instructions for this run, recorded so findings can be explained. */
+  extraInstructions?: string;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -120,7 +122,15 @@ Check each record for these specific problems and report only real ones:
 
 6. Mail_Date / Valid_Date — Valid_Date must be after Mail_Date.
 
-7. Internal consistency — the Comments column carries notes from the generator. If a comment says a price was derived rather than taken from a benchmark, or flags an institution, surface that as a warning so a human confirms it.
+7. Characters that cannot be printed — in ANY field. These arrive from copy-paste and print exactly as they appear. Flag as an error, and give the cleaned text as the suggestion:
+   - Trademark, registered or copyright marks: ™ ® © ℠ ℗, and the typed forms "(TM)", "(R)", "(C)" trailing a word.
+   - Footnote markers left over from a source document: ¹ ² ³, †, ‡, or a stray trailing asterisk.
+   - Emoji or any pictographic character.
+   - Text that is clearly a fragment of a web page or a listing rather than an address: "View on map", "Contact agent", a URL, an email address, a phone number inside the address field.
+   - Any run of characters that reads as encoding damage: "Â", "â€™", "ï»¿", a lone "?" where an apostrophe or dash should be.
+   Note that invisible characters (zero-width spaces, direction marks) are stripped before you see the row, so do not speculate about them — only report what is visible in the text you are given.
+
+8. Internal consistency — the Comments column carries notes from the generator. If a comment says a price was derived rather than taken from a benchmark, or flags an institution, surface that as a warning so a human confirms it.
 
 Report nothing for a row that is fine. Do not invent problems to fill the response, and do not restate a comment that is already in the Comments column unless it needs action.`;
 
@@ -144,7 +154,40 @@ Check each record for these specific problems and report only real ones:
 
 4. Neighbourhood / Land Use — flag a value that contradicts the address (e.g. a Geylang address labelled D1).
 
+5. Characters that cannot be printed — in ANY field. These arrive from copy-paste and print exactly as they appear. Flag as an error, and give the cleaned text as the suggestion:
+   - Trademark, registered or copyright marks: ™ ® © ℠ ℗, and the typed forms "(TM)", "(R)", "(C)" trailing a word.
+   - Footnote markers: ¹ ² ³, †, ‡, or a stray trailing asterisk.
+   - Emoji or any pictographic character.
+   - Text that is a fragment of a web page or listing rather than an address: "View on map", "Contact agent", a URL, an email address, a phone number inside the address field.
+   - Any run of characters that reads as encoding damage: "Â", "â€™", "ï»¿", a lone "?" where an apostrophe or dash should be.
+   Invisible characters are stripped before you see the row, so only report what is visible in the text you are given.
+
 Report nothing for a row that is fine. Do not invent problems to fill the response.`;
+
+/**
+ * Where an operator's own instructions are joined to the built-in rules.
+ *
+ * Appended rather than substituted: the rules above encode what has already been learned
+ * about this data — that most owners are companies, that "&" is deliberate, that merged
+ * postal codes are correct — and losing them would bring back the false positives they
+ * were written to stop. Anything here wins on the specific point it addresses, which is
+ * how "also check X" and "stop flagging Y" both work without rewriting the prompt.
+ */
+function withExtraInstructions(base: string, extra?: string): string {
+  const text = squash(extra);
+  if (!text) return base;
+  return `${base}
+
+------------------------------------------------------------------
+ADDITIONAL INSTRUCTIONS FROM THE OPERATOR
+
+These are written by the person running this check, for this run. They take precedence
+over the numbered rules above wherever the two speak to the same point — including
+telling you to stop reporting something the rules ask for, or to report something they
+do not mention. Where they are silent, the rules above still apply in full.
+
+${text}`;
+}
 
 export interface CrossCheckOptions {
   apiKey?: string;
@@ -155,6 +198,8 @@ export interface CrossCheckOptions {
   concurrency?: number;
   /** Cap the number of rows checked (useful for a cheap smoke test). */
   maxRows?: number;
+  /** The operator's own checks, appended to the built-in rules. */
+  extraInstructions?: string;
   onProgress?: (done: number, total: number) => void;
 }
 
@@ -224,8 +269,10 @@ export async function crossCheck(
   const limited = options.maxRows ? records.slice(0, options.maxRows) : records;
   const batches = chunk(limited, batchSize);
 
-  const instructions =
-    channel === 'lawyer-letter' ? LAWYER_LETTER_INSTRUCTIONS : POSTCARD_INSTRUCTIONS;
+  const instructions = withExtraInstructions(
+    channel === 'lawyer-letter' ? LAWYER_LETTER_INSTRUCTIONS : POSTCARD_INSTRUCTIONS,
+    options.extraInstructions,
+  );
 
   const findings: CrossCheckFinding[] = [];
   const errors: string[] = [];
@@ -307,6 +354,7 @@ export async function crossCheck(
     batches: batches.length,
     rowsChecked: limited.length,
     model,
+    extraInstructions: squash(options.extraInstructions) || undefined,
     inputTokens,
     outputTokens,
     cacheReadTokens,
@@ -341,5 +389,16 @@ export function findingsToRows(result: CrossCheckResult): unknown[][] {
     `${result.rowsChecked} rows in ${result.batches} batches via ${result.model}`,
     `tokens in ${result.inputTokens} / out ${result.outputTokens} / cache read ${result.cacheReadTokens}`,
   ]);
+  // Custom instructions change what counts as a finding, so the sheet has to say what
+  // they were. Without this, a later reader cannot tell why a row was or was not flagged.
+  if (result.extraInstructions) {
+    rows.push([
+      'info',
+      '',
+      'your instructions',
+      result.extraInstructions,
+      'These were applied on top of the built-in rules for this run',
+    ]);
+  }
   return rows;
 }

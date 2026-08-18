@@ -43,6 +43,8 @@ export interface JobSummary {
     severities: Record<string, number>;
     errors: string[];
   } | null;
+  /** The operator's own cross-check instructions, remembered between runs. */
+  crossCheckInstructions: string;
   /** The merge setup: which template, which sheet, and what the last run produced. */
   merge: {
     templateName: string;
@@ -226,6 +228,8 @@ export const api = {
       handle<
         JobSummary & {
           offered: number;
+          /** How many came from a hand-typed Corrected Address column. */
+          typedCorrections: number;
           applied: number;
           skippedIncomplete: number;
           skippedSamples: { ownerName: string; address: string }[];

@@ -18,7 +18,9 @@ Start the app first (`Run PropCo.bat`, or `npm start`); everything here talks to
 | `e2e-rerun-upload.mjs <tracker.xlsx> <tmp> <out>` | The safe correction path: upload full addresses, rebuild, check the Address Overrides sheet. |
 | `e2e-bizfile-live.mjs <jobId> [limit]` | Async BizFile run: expects 202, polls progress, reports the verdict tally. |
 | `e2e-bizfile-upload.mjs <jobId> <tmp>` | The BizFile export path, exercising every verdict branch. |
-| `e2e-crosscheck.mjs` | Calls the Claude cross-check directly on two synthetic rows — isolates the API call from the route. |
+| `e2e-crosscheck.mjs` | Calls the Claude cross-check directly. Rows 2–5 must produce **no** findings; rows 6–8 must all be caught. False positives are the failure that matters. |
+| `e2e-crosscheck-instructions.mjs` | Proves the operator's own instructions change what Claude reports, in both directions — silencing a built-in finding and adding a new one. |
+| `e2e-bizfile-inline.mjs <out-prefix>` | The correct-it-on-the-sheet loop: BizFile → verdict columns on the deliverable → type a Corrected Address → upload → applied. |
 | `e2e-mailmerge-setup.mjs <out>` | Template validation, the wrong-template catch, and the script escape hatch. Needs no Word. |
 | `e2e-mailmerge.mjs <out-prefix>` | The full path including PDFs: test one, run all, zip. Needs Word **and an activated Office**. |
 

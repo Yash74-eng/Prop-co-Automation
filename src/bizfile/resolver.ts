@@ -182,6 +182,42 @@ export function parseBizFileTable(headers: string[], rows: unknown[][]): BizFile
   return out;
 }
 
+/**
+ * Read hand-typed corrections out of a deliverable sheet's "Corrected Address" column.
+ *
+ * This closes the loop the BizFile verdict columns open: the verdict and ACRA's address
+ * sit beside the row, someone types the address to actually use, and re-uploading the
+ * same workbook applies it. No separate override file to keep in step with the sheet.
+ */
+export function parseCorrectedAddresses(
+  headers: string[],
+  rows: unknown[][],
+): { ownerName: string; address: string }[] {
+  // Strip everything but letters and digits: the lawyer-letter sheet spells its columns
+  // "Registered_Proprietor" and normKey leaves underscores in place.
+  const key = (h: unknown) => normKey(h).replace(/[^A-Z0-9]/g, '');
+  const find = (...names: string[]) => {
+    for (const n of names) {
+      const hit = headers.findIndex((h) => key(h) === key(n));
+      if (hit >= 0) return hit;
+    }
+    return -1;
+  };
+
+  const correctedCol = find('corrected address', 'address to use', 'updated address');
+  const ownerCol = find('owner name', 'registered proprietor', 'entity name', 'name');
+  if (correctedCol < 0 || ownerCol < 0) return [];
+
+  const out: { ownerName: string; address: string }[] = [];
+  for (const cells of rows) {
+    const ownerName = squash(cells[ownerCol]);
+    const address = squash(cells[correctedCol]);
+    if (!ownerName || !address) continue;
+    out.push({ ownerName, address });
+  }
+  return out;
+}
+
 /** Match uploaded BizFile records to queries by normalised name. */
 export function csvResolver(records: BizFileRecord[]) {
   const byKey = new Map<string, BizFileRecord>();

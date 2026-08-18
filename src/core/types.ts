@@ -104,6 +104,11 @@ export interface ParsedAddress {
   postal: string;
   /** True when the parser could not confidently split the address. */
   unparsed: boolean;
+  /**
+   * Printing junk removed before parsing (trademark marks, zero-width characters).
+   * Present so the change is flagged for review rather than applied invisibly.
+   */
+  scrubbed?: string[];
 }
 
 /** A deduped group: one letter / postcard recipient. */

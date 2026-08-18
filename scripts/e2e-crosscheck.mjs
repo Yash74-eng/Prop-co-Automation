@@ -6,7 +6,19 @@
  * False positives are the failure mode that matters here: a reviewer who sees noise
  * stops reading the sheet.
  */
-import { crossCheck } from '../src/verify/claude.js';
+import { readFileSync } from 'node:fs';
+
+// Calls Claude directly rather than through the server, so it loads .env itself.
+try {
+  for (const line of readFileSync('.env', 'utf8').split(/\r?\n/)) {
+    const m = /^([A-Z0-9_]+)\s*=\s*(.*)$/.exec(line.trim());
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+  }
+} catch {
+  // No .env — rely on the ambient environment.
+}
+
+const { crossCheck } = await import('../src/verify/claude.js');
 
 const base = {
   Comments: '',
@@ -62,6 +74,11 @@ const DIRTY = [
     Registered_Proprietor: 'REAL COMPANY PTE. LTD.',
     Registered_Proprietor_mailing_address: 'TEMASEK BOULEVARD SINGAPORE 038988',
     minimum_Price: 15000000, higher_Price: 9000000 },
+  // 8 — characters that cannot be printed, plus a listing fragment. The pipeline strips
+  // these, so this row stands for a sheet edited by hand after generation.
+  { ...base, Full_Address: '12 CLUB STREET™ SINGAPORE 069413',
+    Registered_Proprietor: 'ACME HOLDINGS® PTE LTD',
+    Registered_Proprietor_mailing_address: '12 ANN SIANG ROAD SINGAPORE 069692 — View on map' },
 ];
 
 const rows = { lawyerLetterRows: [...CLEAN, ...DIRTY], postcardRows: [] };
@@ -94,8 +111,10 @@ for (const f of realFindings) {
 }
 
 const rowsCaught = new Set(realFindings.map((f) => f.row));
-const missed = [6, 7].filter((r) => !rowsCaught.has(r));
+const missed = [6, 7, 8].filter((r) => !rowsCaught.has(r));
 console.log(
   `\nfalse positives: ${falsePositives.length}   broken rows missed: ${missed.length ? missed.join(', ') : 'none'}`,
 );
-process.exit(falsePositives.length === 0 && missed.length === 0 ? 0 : 1);
+// exitCode rather than exit(): the SDK's keep-alive sockets are still closing, and
+// tearing the loop down under them aborts Node before the exit status is reported.
+process.exitCode = falsePositives.length === 0 && missed.length === 0 ? 0 : 1;

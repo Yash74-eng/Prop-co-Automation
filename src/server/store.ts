@@ -57,6 +57,11 @@ export interface Job {
   };
   crossCheck?: { result: CrossCheckResult; runAt: Date };
   /**
+   * The operator's own cross-check instructions, kept between runs so a second pass does
+   * not silently revert to the built-in rules only.
+   */
+  crossCheckInstructions?: string;
+  /**
    * Progress of an in-flight Claude cross-check. A full sheet is dozens of batches and
    * takes minutes — longer than a browser holds a request open — so the route starts the
    * work and returns; the UI polls this.
@@ -196,6 +201,7 @@ export function jobSummary(job: Job) {
           running: !job.mergeRun.finishedAt,
         }
       : null,
+    crossCheckInstructions: job.crossCheckInstructions ?? '',
     crossCheck: job.crossCheck
       ? {
           runAt: job.crossCheck.runAt,
