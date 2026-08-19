@@ -7,7 +7,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { generateKeyPairSync } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +17,7 @@ import {
   fetchedSheetToXlsx,
   parseSheetUrl,
   serviceAccount,
+  REPO_KEY_PATH,
   type FetchedSheet,
 } from '../src/sheets/google.js';
 
@@ -100,15 +101,47 @@ test('a key pasted inline as one line has its escaped newlines restored', () => 
   }
 });
 
-test('no key configured is not an error — it just means anonymous only', () => {
+test('with nothing configured, the answer depends on what the repo ships', () => {
   const before = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   try {
     delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-    assert.equal(serviceAccount(), undefined);
-    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = '   ';
-    assert.equal(serviceAccount(), undefined);
+
+    // Both states are valid and the suite has to pass in either: a key committed to this
+    // private repo means clone-and-go, no key means anonymous reads only. Asserting one
+    // unconditionally would fail in whichever checkout is not that one.
+    if (existsSync(REPO_KEY_PATH)) {
+      const sa = serviceAccount();
+      assert.ok(sa?.client_email.endsWith('.iam.gserviceaccount.com'));
+      assert.ok(sa?.private_key.includes('BEGIN'));
+    } else {
+      assert.equal(serviceAccount(), undefined);
+      process.env.GOOGLE_SERVICE_ACCOUNT_JSON = '   ';
+      assert.equal(serviceAccount(), undefined);
+    }
   } finally {
     process.env.GOOGLE_SERVICE_ACCOUNT_JSON = before;
+  }
+});
+
+test('an explicit key beats one committed to the repo', () => {
+  // So a machine can use its own credentials without editing tracked files.
+  const dir = mkdtempSync(join(tmpdir(), 'gs-prec-'));
+  const before = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  try {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const mine = join(dir, 'mine.json');
+    writeFileSync(
+      mine,
+      JSON.stringify({
+        client_email: 'mine@override.iam.gserviceaccount.com',
+        private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }),
+      }),
+    );
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = mine;
+    assert.equal(serviceAccount()?.client_email, 'mine@override.iam.gserviceaccount.com');
+  } finally {
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = before;
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
