@@ -22,8 +22,18 @@ config/*.json
 *.docx
 *.doc
 
-# Google service-account keys. A committed key is a live credential to a sheet holding
+# Credential files. A committed service-account key is a live credential to a sheet of
 # owner names and mailing addresses, and rotating it means re-sharing the spreadsheet.
+# Matched by shape rather than by one expected name: the first version of this block
+# listed *service-account*.json and missed propco-sheets-key.json, which is the name the
+# setup instructions actually tell you to use.
+*key.json
+*keys.json
 *service-account*.json
+*credential*.json
 *-sa.json
-gcp-key*.json
+# The filename Google itself gives a downloaded key: <project-id>-<12 hex chars>.json.
+# This is the file sitting in Downloads, and no name-based guess would have caught it.
+*-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
+gcp-*.json
+.propco/
