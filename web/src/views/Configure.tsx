@@ -58,6 +58,7 @@ export function ConfigureView({
 }) {
   const { job, busy, guard, setJob } = state;
   const [compsFile, setCompsFile] = useState<File | null>(null);
+  const [compsUrl, setCompsUrl] = useState('');
   const [suppressFile, setSuppressFile] = useState<File | null>(null);
 
   if (!job) return null;
@@ -294,6 +295,41 @@ export function ConfigureView({
             </button>
             <div style={{ marginTop: 8 }}>
               <TemplateLink kind="comps" label="Comps benchmark template" />
+            </div>
+
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+              <span className="hint" style={{ margin: 0 }}>
+                Or read the comps workbook live. Every tab is fetched, since the Market Watch
+                source keeps one per district:
+              </span>
+              <input
+                type="url"
+                style={{ marginTop: 6 }}
+                value={compsUrl}
+                placeholder="https://docs.google.com/spreadsheets/d/…/edit"
+                onChange={(e) => setCompsUrl(e.target.value)}
+              />
+              <button
+                className="secondary tiny"
+                style={{ marginTop: 6 }}
+                disabled={!compsUrl || !!busy}
+                onClick={() =>
+                  void guard(
+                    'Comps fetch',
+                    () => api.compsFromGoogleSheet(job.id, compsUrl),
+                    'Comps read from Google Sheets',
+                  ).then((r) => r && setJob(r))
+                }
+              >
+                {busy === 'Comps fetch' ? <Spinner /> : null} Fetch comps from Google Sheets
+              </button>
+              {job.compsGoogleSheet ? (
+                <p className="hint" style={{ marginTop: 6 }}>
+                  Live from <b>{job.compsGoogleSheet.spreadsheetTitle}</b> —{' '}
+                  {job.compsGoogleSheet.tabs} tabs, read at{' '}
+                  {new Date(job.compsGoogleSheet.fetchedAt).toLocaleString('en-SG')}
+                </p>
+              ) : null}
             </div>
           </Field>
 

@@ -21,3 +21,9 @@ config/*.json
 # src/excel/templates.ts and are built on demand.
 *.docx
 *.doc
+
+# Google service-account keys. A committed key is a live credential to a sheet holding
+# owner names and mailing addresses, and rotating it means re-sharing the spreadsheet.
+*service-account*.json
+*-sa.json
+gcp-key*.json

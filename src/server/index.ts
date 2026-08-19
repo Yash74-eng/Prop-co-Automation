@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { router } from './routes.js';
 import { pruneStorage, STORAGE_DIR } from './store.js';
 import { wordStatus } from '../mailmerge/wordMerge.js';
+import { serviceAccount } from '../sheets/google.js';
 
 // Load .env without adding a dependency.
 loadEnv();
@@ -27,8 +28,21 @@ app.get('/api/health', async (_req, res) => {
     model: process.env.ANTHROPIC_MODEL ?? 'claude-opus-5',
     wordAvailable: word.available,
     wordReason: word.reason ?? null,
+    // Whether a private Google Sheet can be read. Without a key only a link-shared or
+    // published sheet works, and the UI should say so before the fetch fails.
+    googleServiceAccount: googleServiceAccountEmail(),
   });
 });
+
+/** The configured service-account address, so the UI can say who to share the sheet with. */
+function googleServiceAccountEmail(): string | null {
+  try {
+    return serviceAccount()?.client_email ?? null;
+  } catch {
+    // A malformed key is reported when a fetch is attempted, not on every health poll.
+    return null;
+  }
+}
 
 const webDist = resolve('web/dist');
 if (existsSync(webDist)) {

@@ -33,6 +33,28 @@ export interface Job {
   sourceTable?: SheetTable;
   comps: CompsRecord[];
   compsSource: string;
+  /**
+   * Where the source rows came from, when they were pulled live rather than uploaded.
+   * Kept so the same tab can be re-fetched without asking for the link again.
+   */
+  googleSheet?: {
+    url: string;
+    spreadsheetId: string;
+    spreadsheetTitle: string;
+    gid?: string;
+    sheetTitle: string;
+    via: 'service-account' | 'anonymous-csv';
+    fetchedAt: Date;
+    rows: number;
+  };
+  /** The live comps workbook, when comps were fetched rather than uploaded. */
+  compsGoogleSheet?: {
+    url: string;
+    spreadsheetId: string;
+    spreadsheetTitle: string;
+    tabs: number;
+    fetchedAt: Date;
+  };
   suppressionCount: number;
   /** Transactions from a Market Watch style upload, when one was supplied. */
   transactions?: import('../comps/marketWatch.js').Transaction[];
@@ -155,6 +177,8 @@ export function jobSummary(job: Job) {
     sheetNames: job.sheetNames,
     compsRows: job.comps.length,
     compsSource: job.compsSource,
+    googleSheet: job.googleSheet ?? null,
+    compsGoogleSheet: job.compsGoogleSheet ?? null,
     suppressionCount: job.suppressionCount,
     hasResult: !!job.result,
     outputFileName: job.outputFileName,

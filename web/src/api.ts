@@ -8,6 +8,24 @@ export interface JobSummary {
   sheetNames: string[];
   compsRows: number;
   compsSource: string;
+  /** Set when the rows were pulled live from a Google Sheet rather than uploaded. */
+  googleSheet: {
+    url: string;
+    spreadsheetId: string;
+    spreadsheetTitle: string;
+    gid?: string;
+    sheetTitle: string;
+    via: 'service-account' | 'anonymous-csv';
+    fetchedAt: string;
+    rows: number;
+  } | null;
+  /** Set when comps were pulled live rather than uploaded. */
+  compsGoogleSheet: {
+    url: string;
+    spreadsheetTitle: string;
+    tabs: number;
+    fetchedAt: string;
+  } | null;
   suppressionCount: number;
   hasResult: boolean;
   outputFileName?: string;
@@ -124,6 +142,8 @@ export interface Health {
   /** False means this machine cannot render PDFs — no Word, unactivated Office, or not Windows. */
   wordAvailable: boolean;
   wordReason: string | null;
+  /** Service-account address, or null when a private Google Sheet cannot be read. */
+  googleServiceAccount: string | null;
 }
 
 export interface MergeFieldCheck {
@@ -167,6 +187,39 @@ export const api = {
 
   upload: (file: File) =>
     fetch('/api/jobs', { method: 'POST', body: form({ file }) }).then(handle<JobSummary>),
+
+  /** Read the tracker straight out of a Google Sheet tab instead of uploading an export. */
+  fromGoogleSheet: (url: string, gid?: string) =>
+    fetch('/api/jobs/from-google-sheet', json({ url, gid })).then(handle<JobSummary>),
+
+  /** Pull the same tab again and rebuild from it. */
+  refreshGoogleSheet: (id: string) =>
+    fetch(`/api/jobs/${id}/refresh-google-sheet`, json({})).then(
+      handle<
+        JobSummary & {
+          rowsBefore: number;
+          rowsAfter: number;
+          regenerated: boolean;
+          clearedBizfile: boolean;
+          clearedCrossCheck: boolean;
+        }
+      >,
+    ),
+
+  googleSheetTabs: (url: string) =>
+    fetch(`/api/google-sheet/tabs?url=${encodeURIComponent(url)}`).then(
+      handle<{
+        spreadsheetTitle: string;
+        selectedGid: string | null;
+        tabs: { gid: string; title: string; rowCount: number }[];
+      }>,
+    ),
+
+  /** Read every tab of the comps workbook live — one per district in the Market Watch source. */
+  compsFromGoogleSheet: (id: string, url: string) =>
+    fetch(`/api/jobs/${id}/comps-from-google-sheet`, json({ url })).then(
+      handle<JobSummary & { mode?: string; transactions?: number; districts?: number[] }>,
+    ),
 
   job: (id: string) => fetch(`/api/jobs/${id}`).then(handle<JobSummary>),
 

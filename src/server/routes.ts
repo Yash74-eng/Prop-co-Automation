@@ -54,7 +54,7 @@ import { defaultCompSelection, parseTransactionSheet } from '../comps/marketWatc
 import { defaultPricing } from '../comps/pricing.js';
 import { CLAUDE_SHEET_HEADERS, crossCheck, findingsToRows } from '../verify/claude.js';
 import { isCorporateName } from '../core/names.js';
-import { normKey, parseLooseDate, squash } from '../core/text.js';
+import { formatDate, normKey, parseLooseDate, squash } from '../core/text.js';
 import {
   buildTemplate,
   isTemplateKind,
@@ -62,6 +62,14 @@ import {
   templateFileName,
   templateKinds,
 } from '../excel/templates.js';
+import {
+  fetchAllTabs,
+  fetchedSheetToXlsx,
+  fetchSheet,
+  listTabs,
+  parseSheetUrl,
+
+} from '../sheets/google.js';
 import type { AddressOverride } from '../core/types.js';
 import {
   checkMergeFields,
@@ -86,6 +94,12 @@ function fail(res: import('express').Response, error: unknown, status = 400) {
   res.status(status).json({ error: message });
 }
 
+/** DD MMM YYYY HH:mm, for a note that says when a live fetch happened. */
+function formatDateTimeLocal(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${formatDate(date)} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 /** POST /api/jobs — upload the Main Database workbook. */
 router.post('/jobs', upload.single('file'), (req, res) => {
   try {
@@ -104,6 +118,134 @@ router.post('/jobs', upload.single('file'), (req, res) => {
     }
 
     res.json(jobSummary(job));
+  } catch (error) {
+    fail(res, error);
+  }
+});
+
+/**
+ * POST /api/jobs/from-google-sheet — read the tracker live instead of uploading an export.
+ *
+ * The fetched tab is written to an .xlsx and the job created from that file, so every
+ * later step — preview, generate, comps, BizFile, mail merge — behaves identically to an
+ * upload. One parsing path for "where the data came from" is worth a temporary file.
+ */
+router.post('/jobs/from-google-sheet', async (req, res) => {
+  try {
+    const url = squash(req.body?.url);
+    const ref = parseSheetUrl(url);
+    if (req.body?.gid) ref.gid = String(req.body.gid);
+
+    const sheet = await fetchSheet(ref);
+    if (sheet.rows.length === 0) {
+      throw new Error(
+        `The tab "${sheet.sheetTitle}" is empty. Check you pasted the link with the right ` +
+          '#gid= — the fragment is what names the tab you are looking at.',
+      );
+    }
+
+    const path = join(UPLOAD_DIR, `${randomUUID()}.xlsx`);
+    await fetchedSheetToXlsx(sheet, path);
+    const { names } = readWorkbookSheets(path);
+    const label = `${sheet.spreadsheetTitle} [${sheet.sheetTitle}]`;
+    const job = createJob(path, label, names);
+    job.googleSheet = {
+      url,
+      spreadsheetId: sheet.spreadsheetId,
+      spreadsheetTitle: sheet.spreadsheetTitle,
+      gid: sheet.gid,
+      sheetTitle: sheet.sheetTitle,
+      via: sheet.via,
+      fetchedAt: sheet.fetchedAt,
+      rows: sheet.rows.length,
+    };
+    // The tab a Google Sheet was fetched from is the Main Database by construction —
+    // there is only one tab in the file we just wrote.
+    job.sheetName = names[0];
+    logStep(
+      job,
+      'google-sheet',
+      `Fetched ${sheet.rows.length} rows from ${label} via ${sheet.via}`,
+    );
+    res.json(jobSummary(job));
+  } catch (error) {
+    fail(res, error);
+  }
+});
+
+/**
+ * POST /api/jobs/:id/refresh-google-sheet — pull the tab again and rebuild.
+ *
+ * This is what "live" means for a batch tool: the sheet is re-read on demand and the whole
+ * pipeline re-runs, rather than rows being patched in place. Dedupe keys on the mailing
+ * address, so a changed address has to go in at the start or the groups end up wrong.
+ */
+router.post('/jobs/:id/refresh-google-sheet', async (req, res) => {
+  try {
+    const job = requireJob(String(req.params.id));
+    const source = job.googleSheet;
+    if (!source) {
+      throw new Error('This job was not created from a Google Sheet, so there is nothing to refresh');
+    }
+
+    const sheet = await fetchSheet({ spreadsheetId: source.spreadsheetId, gid: source.gid });
+    if (sheet.rows.length === 0) {
+      throw new Error(`The tab "${sheet.sheetTitle}" is now empty — refusing to replace the job with nothing`);
+    }
+
+    const rowsBefore = source.rows;
+    const path = join(UPLOAD_DIR, `${randomUUID()}.xlsx`);
+    await fetchedSheetToXlsx(sheet, path);
+    const { names } = readWorkbookSheets(path);
+
+    job.sourcePath = path;
+    job.sourceFileName = `${sheet.spreadsheetTitle} [${sheet.sheetTitle}]`;
+    job.sheetNames = names;
+    job.sheetName = names[0];
+    job.sourceTable = undefined;
+    job.googleSheet = { ...source, fetchedAt: sheet.fetchedAt, rows: sheet.rows.length, via: sheet.via };
+
+    // Verification results describe the rows that were there before. Keeping them would
+    // let a verdict from the old fetch sit beside a row from the new one.
+    const staleBizfile = !!job.bizfile;
+    const staleCrossCheck = !!job.crossCheck;
+    job.bizfile = undefined;
+    job.crossCheck = undefined;
+
+    let regenerated = false;
+    if (job.options && job.result) {
+      await regenerate(job, job.options, [
+        `Re-fetched from ${job.sourceFileName} at ${formatDateTimeLocal(sheet.fetchedAt)}.`,
+      ]);
+      regenerated = true;
+    }
+
+    logStep(
+      job,
+      'google-sheet',
+      `Re-fetched: ${rowsBefore} rows -> ${sheet.rows.length}` +
+        (regenerated ? ', sheet rebuilt' : ', not yet generated'),
+    );
+
+    res.json({
+      ...jobSummary(job),
+      rowsBefore,
+      rowsAfter: sheet.rows.length,
+      regenerated,
+      clearedBizfile: staleBizfile,
+      clearedCrossCheck: staleCrossCheck,
+    });
+  } catch (error) {
+    fail(res, error);
+  }
+});
+
+/** GET /api/google-sheet/tabs?url=... — list the tabs so the right one can be picked. */
+router.get('/google-sheet/tabs', async (req, res) => {
+  try {
+    const ref = parseSheetUrl(squash(req.query.url));
+    const { spreadsheetTitle, tabs } = await listTabs(ref);
+    res.json({ spreadsheetTitle, tabs, selectedGid: ref.gid ?? null });
   } catch (error) {
     fail(res, error);
   }
@@ -158,43 +300,96 @@ router.post('/jobs/:id/comps', upload.single('file'), (req, res) => {
   try {
     const job = requireJob(String(req.params.id));
     if (!req.file) throw new Error('No file uploaded');
-    const { wb, names } = readWorkbookSheets(req.file.path);
-
-    // Try every tab as transactions first; a Market Watch workbook keeps one per district.
-    const transactions: import('../comps/marketWatch.js').Transaction[] = [];
-    const tabsUsed: string[] = [];
-    for (const name of names) {
-      const table = sheetToTable(wb, name);
-      if (!looksLikeTransactions(table.headers)) continue;
-      const rows = parseTransactionSheet(name, table.headers, table.rows);
-      if (rows.length > 0) {
-        transactions.push(...rows);
-        tabsUsed.push(name);
-      }
-    }
-
-    if (transactions.length > 0) {
-      job.transactions = transactions;
-      job.comps = [];
-      const districts = [...new Set(transactions.map((t) => t.district))].sort((a, b) => a - b);
-      job.compsSource =
-        `${req.file.originalname} — ${transactions.length} transactions ` +
-        `across ${districts.length} districts (${tabsUsed.length} tabs)`;
-      logStep(job, 'comps', `Transactions loaded: ${job.compsSource}`);
-      res.json({ ...jobSummary(job), mode: 'transactions', transactions: transactions.length, districts });
-      return;
-    }
-
-    const sheetName = squash(req.body?.sheetName) || names[0];
-    job.transactions = undefined;
-    job.comps = parseCompsTable(sheetToTable(wb, sheetName));
-    job.compsSource = `${req.file.originalname} [${sheetName}]`;
-    logStep(job, 'comps', `Replaced with ${job.comps.length} rows from ${job.compsSource}`);
-    res.json(jobSummary(job));
+    res.json(loadComps(job, req.file.path, req.file.originalname, squash(req.body?.sheetName)));
   } catch (error) {
     fail(res, error);
   }
 });
+
+/**
+ * POST /api/jobs/:id/comps-from-google-sheet — read the comps workbook live.
+ *
+ * Every tab is fetched, not just the one in the link: the Market Watch source keeps one
+ * per district, and taking a single tab would quietly limit which districts can be priced.
+ */
+router.post('/jobs/:id/comps-from-google-sheet', async (req, res) => {
+  try {
+    const job = requireJob(String(req.params.id));
+    const url = squash(req.body?.url);
+    const ref = parseSheetUrl(url);
+
+    const tabs = await fetchAllTabs(ref);
+    const withRows = tabs.filter((t) => t.rows.length > 0);
+    if (withRows.length === 0) throw new Error('Every tab in that spreadsheet is empty');
+
+    const path = join(UPLOAD_DIR, `${randomUUID()}.xlsx`);
+    await fetchedSheetToXlsx(withRows, path);
+    const label = `${withRows[0].spreadsheetTitle} (live, ${withRows.length} tabs)`;
+    const summary = loadComps(job, path, label, squash(req.body?.sheetName));
+
+    job.compsGoogleSheet = {
+      url,
+      spreadsheetId: ref.spreadsheetId,
+      spreadsheetTitle: withRows[0].spreadsheetTitle,
+      tabs: withRows.length,
+      fetchedAt: withRows[0].fetchedAt,
+    };
+    res.json({ ...summary, ...jobSummary(job) });
+  } catch (error) {
+    fail(res, error);
+  }
+});
+
+/**
+ * Load comps from a workbook on disk, whichever way it arrived.
+ *
+ * A transactions workbook and a benchmark table are told apart by their columns rather
+ * than by how they were supplied, so an upload and a live fetch cannot diverge.
+ */
+function loadComps(
+  job: import('./store.js').Job,
+  path: string,
+  label: string,
+  sheetNameHint?: string,
+) {
+  const { wb, names } = readWorkbookSheets(path);
+
+  // Try every tab as transactions first; a Market Watch workbook keeps one per district.
+  const transactions: import('../comps/marketWatch.js').Transaction[] = [];
+  const tabsUsed: string[] = [];
+  for (const name of names) {
+    const table = sheetToTable(wb, name);
+    if (!looksLikeTransactions(table.headers)) continue;
+    const rows = parseTransactionSheet(name, table.headers, table.rows);
+    if (rows.length > 0) {
+      transactions.push(...rows);
+      tabsUsed.push(name);
+    }
+  }
+
+  if (transactions.length > 0) {
+    job.transactions = transactions;
+    job.comps = [];
+    const districts = [...new Set(transactions.map((t) => t.district))].sort((a, b) => a - b);
+    job.compsSource =
+      `${label} — ${transactions.length} transactions ` +
+      `across ${districts.length} districts (${tabsUsed.length} tabs)`;
+    logStep(job, 'comps', `Transactions loaded: ${job.compsSource}`);
+    return {
+      ...jobSummary(job),
+      mode: 'transactions' as const,
+      transactions: transactions.length,
+      districts,
+    };
+  }
+
+  const sheetName = sheetNameHint || names[0];
+  job.transactions = undefined;
+  job.comps = parseCompsTable(sheetToTable(wb, sheetName));
+  job.compsSource = `${label} [${sheetName}]`;
+  logStep(job, 'comps', `Replaced with ${job.comps.length} rows from ${job.compsSource}`);
+  return jobSummary(job);
+}
 
 /** POST /api/jobs/:id/suppression — upload a compset / do-not-contact list. */
 router.post('/jobs/:id/suppression', upload.single('file'), (req, res) => {

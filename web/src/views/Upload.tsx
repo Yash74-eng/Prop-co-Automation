@@ -31,8 +31,22 @@ export function UploadView({
   onChange: (next: RunSettings) => void;
   onNext: () => void;
 }) {
-  const { job, busy, guard, setJob, reset } = state;
+  const { job, health, busy, guard, setJob, reset } = state;
   const [preview, setPreview] = useState<SheetPreview | null>(null);
+  const [sheetUrl, setSheetUrl] = useState('');
+  const [tabs, setTabs] = useState<{
+    spreadsheetTitle: string;
+    selectedGid: string | null;
+    tabs: { gid: string; title: string; rowCount: number }[];
+  } | null>(null);
+  const [gid, setGid] = useState('');
+  const [refreshed, setRefreshed] = useState<{
+    rowsBefore: number;
+    rowsAfter: number;
+    regenerated: boolean;
+    clearedBizfile: boolean;
+    clearedCrossCheck: boolean;
+  } | null>(null);
   const channel = settings.channel;
 
   async function loadPreview(id: string, sheet: string) {
@@ -55,6 +69,18 @@ export function UploadView({
     const summary = await guard('Upload', () => api.upload(file), `Loaded ${file.name}`);
     if (!summary) return;
     setPreview(null);
+    setJob(summary);
+  }
+
+  async function onFetchSheet() {
+    const summary = await guard(
+      'Fetch sheet',
+      () => api.fromGoogleSheet(sheetUrl, gid || undefined),
+      'Fetched from Google Sheets',
+    );
+    if (!summary) return;
+    setPreview(null);
+    setRefreshed(null);
     setJob(summary);
   }
 
@@ -111,18 +137,107 @@ export function UploadView({
       </Card>
 
       {!channel ? null : !job ? (
-        <Card>
-          <DropZone
-            onFile={onFile}
-            accept=".xlsx,.xlsm,.xls,.csv"
-            label={busy === 'Upload' ? 'Reading workbook…' : 'Drop the workbook here'}
-            hint="Excel or CSV, up to 80 MB. Stays on this machine."
-          />
-          <p className="hint" style={{ marginTop: 12 }}>
-            No tracker to hand? <TemplateLink kind="main-database" label="Main Database template" />{' '}
-            — the exact column names, with two worked rows.
-          </p>
-        </Card>
+        <>
+          <Card>
+            <DropZone
+              onFile={onFile}
+              accept=".xlsx,.xlsm,.xls,.csv"
+              label={busy === 'Upload' ? 'Reading workbook…' : 'Drop the workbook here'}
+              hint="Excel or CSV, up to 80 MB. Stays on this machine."
+            />
+            <p className="hint" style={{ marginTop: 12 }}>
+              No tracker to hand? <TemplateLink kind="main-database" label="Main Database template" />{' '}
+              — the exact column names, with two worked rows.
+            </p>
+          </Card>
+
+          <Card
+            title="Or read it live from Google Sheets"
+            hint="Paste the link to the tab holding the owner rows. Nothing is written back — the sheet is only ever read."
+          >
+            <Field
+              label="Google Sheets link"
+              hint="Copy it from the browser bar. The #gid= on the end names the tab you are looking at."
+            >
+              <input
+                type="url"
+                value={sheetUrl}
+                placeholder="https://docs.google.com/spreadsheets/d/…/edit#gid=1663840271"
+                onChange={(e) => {
+                  setSheetUrl(e.target.value);
+                  setTabs(null);
+                  setGid('');
+                }}
+              />
+            </Field>
+
+            {tabs ? (
+              <Field label={`Tab in "${tabs.spreadsheetTitle}"`} hint="Defaults to the one your link points at.">
+                <select value={gid} onChange={(e) => setGid(e.target.value)}>
+                  {tabs.tabs.map((t) => (
+                    <option key={t.gid} value={t.gid}>
+                      {t.title}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ) : null}
+
+            <div className="actions">
+              <button disabled={!sheetUrl || !!busy} onClick={() => void onFetchSheet()}>
+                {busy === 'Fetch sheet' ? <Spinner /> : null}
+                Fetch this tab
+              </button>
+              {health?.googleServiceAccount ? (
+                <button
+                  className="secondary"
+                  disabled={!sheetUrl || !!busy}
+                  onClick={() =>
+                    void guard('List tabs', () => api.googleSheetTabs(sheetUrl)).then((t) => {
+                      if (!t) return;
+                      setTabs(t);
+                      setGid(t.selectedGid ?? t.tabs[0]?.gid ?? '');
+                    })
+                  }
+                >
+                  {busy === 'List tabs' ? <Spinner /> : null}
+                  List the tabs
+                </button>
+              ) : null}
+            </div>
+
+            {health?.googleServiceAccount ? (
+              <Msg kind="ok">
+                Reading as <code>{health.googleServiceAccount}</code>. Share the spreadsheet with
+                that address as a <b>Viewer</b> and it can be read while staying private.
+              </Msg>
+            ) : (
+              <Msg kind="warn">
+                <b>No Google credentials configured</b>, so only a sheet that is already
+                link-shared or published can be read. Figment's tracker holds owner names and
+                mailing addresses, so publishing it is not the right fix — set up a read-only
+                service account instead:
+                <ol style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 12.5, lineHeight: 1.7 }}>
+                  <li>
+                    At <code>console.cloud.google.com</code>, create a project and enable the{' '}
+                    <b>Google Sheets API</b>
+                  </li>
+                  <li>
+                    Create a service account, then <b>Keys → Add key → JSON</b>, and save the file
+                  </li>
+                  <li>
+                    Share the spreadsheet with the service-account address (it ends in{' '}
+                    <code>.iam.gserviceaccount.com</code>) as a <b>Viewer</b>
+                  </li>
+                  <li>
+                    Put the file path in <code>GOOGLE_SERVICE_ACCOUNT_JSON</code> in{' '}
+                    <code>.env</code> and restart
+                  </li>
+                </ol>
+              </Msg>
+            )}
+          </Card>
+        </>
       ) : (
         <>
           <Card
@@ -133,6 +248,75 @@ export function UploadView({
               </span>
             }
           >
+            {job.googleSheet ? (
+              <>
+                <Msg kind="ok">
+                  Live from <b>{job.googleSheet.spreadsheetTitle}</b> —{' '}
+                  <b>{job.googleSheet.sheetTitle}</b>, {job.googleSheet.rows.toLocaleString('en-SG')}{' '}
+                  rows, read at {new Date(job.googleSheet.fetchedAt).toLocaleString('en-SG')}
+                  {job.googleSheet.via === 'anonymous-csv' ? (
+                    <>
+                      <br />
+                      <b>Read without credentials</b>, which means this sheet is currently readable
+                      by anyone holding its URL.
+                    </>
+                  ) : null}
+                </Msg>
+
+                {refreshed ? (
+                  <Msg kind={refreshed.rowsAfter === refreshed.rowsBefore ? 'info' : 'ok'}>
+                    Re-read: <b>{refreshed.rowsBefore.toLocaleString('en-SG')}</b> rows →{' '}
+                    <b>{refreshed.rowsAfter.toLocaleString('en-SG')}</b>.{' '}
+                    {refreshed.regenerated
+                      ? 'The sheet was rebuilt from the new rows.'
+                      : 'Nothing generated yet, so nothing to rebuild.'}
+                    {refreshed.clearedBizfile || refreshed.clearedCrossCheck ? (
+                      <>
+                        <br />
+                        <span style={{ fontSize: 12.5 }}>
+                          The {refreshed.clearedBizfile ? 'BizFile' : ''}
+                          {refreshed.clearedBizfile && refreshed.clearedCrossCheck ? ' and ' : ''}
+                          {refreshed.clearedCrossCheck ? 'cross-check' : ''} results were cleared —
+                          they described the rows that were there before. Run them again.
+                        </span>
+                      </>
+                    ) : null}
+                  </Msg>
+                ) : null}
+
+                <div className="actions" style={{ marginTop: 0, marginBottom: 14 }}>
+                  <button
+                    className="secondary"
+                    disabled={!!busy}
+                    onClick={() =>
+                      void guard(
+                        'Refresh sheet',
+                        () => api.refreshGoogleSheet(job.id),
+                        'Re-read from Google Sheets',
+                      ).then((r) => {
+                        if (!r) return;
+                        setJob(r);
+                        setRefreshed(r);
+                        setPreview(null);
+                        void loadPreview(r.id, r.sheetName ?? r.sheetNames[0]);
+                      })
+                    }
+                  >
+                    {busy === 'Refresh sheet' ? <Spinner /> : null}
+                    Re-read the sheet now
+                  </button>
+                  <a
+                    className="button ghost tiny"
+                    href={job.googleSheet.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open in Google Sheets
+                  </a>
+                </div>
+              </>
+            ) : null}
+
             {channel === 'postcard' ? (
               <Msg kind="info">
                 Postcards carry no pricing, so no comps benchmark is needed for this run.
