@@ -16,7 +16,8 @@
     "test:real": "tsx test/real-data.check.ts",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "key:encrypt": "tsx scripts/encrypt-key.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.68.0",

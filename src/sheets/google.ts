@@ -17,6 +17,7 @@
  */
 import { createSign } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { decryptCredential } from './keystore.js';
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const SCOPE = 'https://www.googleapis.com/auth/spreadsheets.readonly';
@@ -59,22 +60,27 @@ interface ServiceAccountKey {
   private_key: string;
 }
 
+/** Where an encrypted key is kept when one is committed to the repo. */
+export const ENCRYPTED_KEY_PATH = 'secrets/google-service-account.json.enc';
+
 /**
- * The configured service account, if there is one. Accepts either a path to the JSON key
- * file Google downloads or the JSON itself, since a .env value cannot span lines.
+ * The configured service account, if there is one. Three sources, in order:
+ *
+ *  1. `GOOGLE_SERVICE_ACCOUNT_JSON` — a path to the key file Google downloads, or the JSON
+ *     itself, since a .env value cannot span lines.
+ *  2. An encrypted key committed to the repo, unlocked by
+ *     `GOOGLE_SERVICE_ACCOUNT_PASSPHRASE`. Nothing sensitive is written to disk: the key is
+ *     decrypted into memory on each start.
+ *  3. Nothing, which means only a link-shared or published sheet can be read.
+ *
+ * The plaintext path wins so a machine can override the shared key with its own without
+ * touching the repo.
  */
 export function serviceAccount(): ServiceAccountKey | undefined {
   const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
-  if (!raw) return undefined;
-  let text = raw;
-  if (!raw.startsWith('{')) {
-    if (!existsSync(raw)) {
-      throw new GoogleSheetAccessError(
-        `GOOGLE_SERVICE_ACCOUNT_JSON points at "${raw}", which does not exist.`,
-      );
-    }
-    text = readFileSync(raw, 'utf8');
-  }
+  const text = raw ? readPlainKey(raw) : readEncryptedKey();
+  if (!text) return undefined;
+
   let parsed: Partial<ServiceAccountKey>;
   try {
     parsed = JSON.parse(text) as Partial<ServiceAccountKey>;
@@ -93,6 +99,36 @@ export function serviceAccount(): ServiceAccountKey | undefined {
     // A key pasted into .env on one line carries literal \n instead of newlines.
     private_key: parsed.private_key.replace(/\\n/g, '\n'),
   };
+}
+
+function readPlainKey(raw: string): string {
+  if (raw.startsWith('{')) return raw;
+  if (!existsSync(raw)) {
+    throw new GoogleSheetAccessError(
+      `GOOGLE_SERVICE_ACCOUNT_JSON points at "${raw}", which does not exist.`,
+    );
+  }
+  return readFileSync(raw, 'utf8');
+}
+
+/**
+ * The committed encrypted key, if there is one and a passphrase to open it.
+ *
+ * A file present with no passphrase is reported rather than ignored: it means the operator
+ * believes credentials are configured, and silently falling back to anonymous reads would
+ * hide that from them until a private sheet failed.
+ */
+function readEncryptedKey(): string | undefined {
+  const path = process.env.GOOGLE_SERVICE_ACCOUNT_ENC?.trim() || ENCRYPTED_KEY_PATH;
+  if (!existsSync(path)) return undefined;
+
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    throw new GoogleSheetAccessError(`"${path}" is not readable as an encrypted credential.`);
+  }
+  return decryptCredential(envelope, process.env.GOOGLE_SERVICE_ACCOUNT_PASSPHRASE?.trim() ?? '');
 }
 
 const b64url = (value: string) => Buffer.from(value).toString('base64url');

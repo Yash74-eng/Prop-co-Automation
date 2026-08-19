@@ -64,26 +64,44 @@ Get one at <https://console.anthropic.com/settings/keys> and put it in `.env` as
 Only needed if you want to pull the tracker or the comps workbook straight out of Google
 Sheets instead of uploading an export.
 
-Ask Yash for **your own key** on the `propco-sheets-reade` service account. Do not share one
-key between people: a key per person means one can be revoked without breaking the other.
-It should arrive through a password manager or a 1:1 file share — not Slack, email, or this
-repo.
+There are two ways this reaches you. Check whether `secrets/google-service-account.json.enc`
+exists in the repo.
 
-Save it outside the repo, for example:
+**If it does — you only need the passphrase.** The key is committed encrypted; the
+passphrase is not in the repo and never will be. Ask Yash for it, then add to `.env`:
 
 ```
-C:\Users\<you>\.propco\propco-sheets-key.json
+GOOGLE_SERVICE_ACCOUNT_PASSPHRASE=<the passphrase>
 ```
 
-and point `.env` at it:
+Leave `GOOGLE_SERVICE_ACCOUNT_JSON` empty — if it is set, it takes priority. The key is
+decrypted into memory each time the app starts; it is never written to disk in the clear.
+
+**If it does not — ask for your own key file.** A key per person means one can be revoked
+without breaking the other. It should arrive through a password manager or a 1:1 file share
+— not Slack, email, or this repo. Save it outside the repo, for example
+`C:\Users\<you>\.propco\propco-sheets-key.json`, and point `.env` at it:
 
 ```
 GOOGLE_SERVICE_ACCOUNT_JSON=C:\Users\<you>\.propco\propco-sheets-key.json
 ```
 
-Restart. The Upload step should now show **"Reading as propco-sheets-reade@…"**. You do not
-need the spreadsheet shared with your personal Google account — access belongs to the
-service account, and that share is already in place.
+Either way, restart and the Upload step should show **"Reading as propco-sheets-reade@…"**.
+You do not need the spreadsheet shared with your personal Google account — access belongs to
+the service account, and that share is already in place.
+
+### Rotating or re-encrypting the key
+
+After downloading a fresh key from Google:
+
+```
+npm run key:encrypt -- "the-key-google-downloaded.json"
+```
+
+It asks for a passphrase at a masked prompt — never as an argument, which would land in
+shell history and the process list. It verifies the file decrypts back to the original
+before writing, so a broken file can never be the thing you commit. Then commit
+`secrets/google-service-account.json.enc` and delete the plaintext download.
 
 ### Microsoft Word — for producing PDFs (step 5)
 
