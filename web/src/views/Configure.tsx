@@ -268,11 +268,14 @@ export function ConfigureView({
 
       <Card
         title="Optional inputs"
-        hint="Both are remembered for this job — load once and they apply to every run."
+        hint="Remembered for this job — load once and they apply to every run."
       >
         <div className="grid">
+          {/* Comps feed pricing, and only the lawyer letter is priced. Offering them on a
+              postcard run would imply they change the output, which they cannot. */}
+          {!isLetter ? null : (
           <Field
-            label="Comps benchmark override"
+            label="Comps source"
             hint={`Currently: ${job.compsRows} rows from ${job.compsSource}`}
           >
             <input
@@ -332,6 +335,7 @@ export function ConfigureView({
               ) : null}
             </div>
           </Field>
+          )}
 
           <Field
             label="Suppression / compset list"
