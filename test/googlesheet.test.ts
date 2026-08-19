@@ -7,7 +7,8 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { generateKeyPairSync } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import XLSX from 'xlsx';
@@ -15,6 +16,7 @@ import {
   GoogleSheetAccessError,
   fetchedSheetToXlsx,
   parseSheetUrl,
+  serviceAccount,
   type FetchedSheet,
 } from '../src/sheets/google.js';
 
@@ -53,6 +55,77 @@ test('a link that is not a spreadsheet is refused with something actionable', ()
     () => parseSheetUrl('https://docs.google.com/document/d/1abcdefghijklmnopqrstuvwx/edit'),
     GoogleSheetAccessError,
   );
+});
+
+/** --------------------------------------------------- the key as .env holds it ---- */
+
+test('a Windows path with a trailing space is read, because that is what gets pasted', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gs-key-'));
+  const before = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  try {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
+    const file = join(dir, 'propco-sheets-key.json');
+    writeFileSync(
+      file,
+      JSON.stringify({ client_email: 'propco@x.iam.gserviceaccount.com', private_key: pem }),
+    );
+    assert.ok(file.includes('\\'), 'the temp path should be a Windows path on this machine');
+
+    // loadEnv puts the rest of the line in verbatim: backslashes intact, and any trailing
+    // space left behind by copying the path out of Explorer.
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = `${file} `;
+    const sa = serviceAccount();
+    assert.equal(sa?.client_email, 'propco@x.iam.gserviceaccount.com');
+    assert.ok(sa?.private_key.includes('\n'), 'the PEM must keep real newlines');
+  } finally {
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = before;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a key pasted inline as one line has its escaped newlines restored', () => {
+  const before = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  try {
+    // A .env value cannot span lines, so a pasted PEM arrives with literal backslash-n.
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = JSON.stringify({
+      client_email: 'propco@x.iam.gserviceaccount.com',
+      private_key: '-----BEGIN PRIVATE KEY-----\\nAAAA\\n-----END PRIVATE KEY-----\\n',
+    });
+    const sa = serviceAccount();
+    assert.ok(sa?.private_key.includes('\n'), 'literal \\n must become a real newline');
+    assert.ok(!sa?.private_key.includes('\\n'));
+  } finally {
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = before;
+  }
+});
+
+test('no key configured is not an error — it just means anonymous only', () => {
+  const before = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  try {
+    delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+    assert.equal(serviceAccount(), undefined);
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = '   ';
+    assert.equal(serviceAccount(), undefined);
+  } finally {
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = before;
+  }
+});
+
+test('a key that is missing, unparseable, or incomplete says which', () => {
+  const before = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  try {
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = join(tmpdir(), 'definitely-not-here.json');
+    assert.throws(() => serviceAccount(), /does not exist/);
+
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = '{not json';
+    assert.throws(() => serviceAccount(), /not valid JSON/);
+
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = JSON.stringify({ client_email: 'a@b.com' });
+    assert.throws(() => serviceAccount(), /missing client_email or private_key/);
+  } finally {
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = before;
+  }
 });
 
 /** ---------------------------------------------------- tab -> workbook on disk ---- */
