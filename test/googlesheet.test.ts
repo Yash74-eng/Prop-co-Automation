@@ -17,6 +17,7 @@ import {
   fetchedSheetToXlsx,
   parseSheetUrl,
   serviceAccount,
+  looksLikeMainDatabase,
   REPO_KEY_PATH,
   type FetchedSheet,
 } from '../src/sheets/google.js';
@@ -159,6 +160,38 @@ test('a key that is missing, unparseable, or incomplete says which', () => {
   } finally {
     process.env.GOOGLE_SERVICE_ACCOUNT_JSON = before;
   }
+});
+
+/** ------------------------------------------------ which tab is the tracker ---- */
+
+test('an owner column is what identifies the tracker, not an address column', () => {
+  // The bug this pins: a Market Watch transactions tab has an Address column, so a rule
+  // keyed on "address" read District 1 of the comps workbook as the Main Database and
+  // produced a run with no recipients and no error.
+  const transactions = [
+    'Date', 'District', 'Project Name', 'Address', 'Property Type', 'Tenure',
+    'Area (sq ft)', 'Type of Area', 'Price ($psf)', 'Price ($)', 'No. of Floors',
+    'GPR', 'URA Zoning',
+  ];
+  assert.equal(looksLikeMainDatabase(transactions), false);
+
+  const tracker = ['Address', 'Target', 'Neighbourhood', 'Owner Name', 'Owner Address'];
+  assert.equal(looksLikeMainDatabase(tracker), true);
+});
+
+test('every spelling of the owner column counts', () => {
+  for (const owner of ['Owner Name', 'owner_name', 'Owner Address', 'Registered_Proprietor']) {
+    assert.equal(looksLikeMainDatabase(['Address', owner]), true, `missed "${owner}"`);
+  }
+});
+
+test('a tab with no owner column never qualifies, however many other columns match', () => {
+  // Address + Target + Neighbourhood + Land Use + Tenure and still no owners: that is a
+  // property list, not a mailing list, and merging from it would post nothing.
+  assert.equal(
+    looksLikeMainDatabase(['Address', 'Target', 'Neighbourhood', 'Land Use', 'Tenure']),
+    false,
+  );
 });
 
 /** ---------------------------------------------------- tab -> workbook on disk ---- */

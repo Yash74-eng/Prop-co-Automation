@@ -17,6 +17,7 @@
  */
 import { createSign } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { headerKey } from '../core/text.js';
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const SCOPE = 'https://www.googleapis.com/auth/spreadsheets.readonly';
@@ -332,6 +333,141 @@ async function fetchViaCsv(ref: SheetRef): Promise<FetchedSheet> {
     headers: (grid[0] ?? []).map((c) => String(c ?? '')),
     rows: grid.slice(1),
     via: 'anonymous-csv',
+    fetchedAt: new Date(),
+  };
+}
+
+/**
+ * What makes a tab the Main Database is that it names owners.
+ *
+ * Not "has an Address column": a transactions tab has one of those too, which is how a
+ * link pointing at District 1 of the comps workbook read as a tracker. Owner Name and
+ * Owner Address never appear on a transactions tab, so they are the discriminator; the
+ * rest only break ties between tabs that already qualify.
+ */
+const OWNER_SIGNALS = ['ownername', 'owneraddress', 'registeredproprietor'];
+const SUPPORTING_SIGNALS = ['address', 'target', 'neighbourhood', 'landuse', 'tenure'];
+
+export function looksLikeMainDatabase(headers: string[]): boolean {
+  const keys = new Set(headers.map((h) => headerKey(h)));
+  return OWNER_SIGNALS.some((s) => keys.has(s));
+}
+
+/** Only meaningful for tabs that already qualify; used to pick between them. */
+function scoreAsMainDatabase(headers: string[]): number {
+  const keys = new Set(headers.map((h) => headerKey(h)));
+  if (!looksLikeMainDatabase(headers)) return 0;
+  return (
+    OWNER_SIGNALS.filter((s) => keys.has(s)).length * 10 +
+    SUPPORTING_SIGNALS.filter((s) => keys.has(s)).length
+  );
+}
+
+export interface MainDatabasePick {
+  sheet: FetchedSheet;
+  /** Why this tab, in words — it goes in the job log so the choice is never a mystery. */
+  reason: string;
+  /** Every tab that was considered. */
+  candidates: string[];
+}
+
+/**
+ * Find the tracker's owner rows in a shared spreadsheet.
+ *
+ * Not simply "the tab in the link": someone copies the URL from whichever tab they were
+ * last looking at, and reading a Notes or Comps tab as the Main Database produces a run
+ * with no recipients and nothing obviously wrong. So the tab named "Main Database" wins,
+ * then the one the link points at, and if that turns out to carry no owner columns the
+ * remaining tabs are scored and the best one used.
+ */
+export async function fetchMainDatabase(ref: SheetRef): Promise<MainDatabasePick> {
+  const key = serviceAccount();
+  if (!key) {
+    // The CSV route cannot enumerate tabs, so the link is all there is to go on.
+    return {
+      sheet: await fetchViaCsv(ref),
+      reason: 'read the tab in the link (listing tabs needs a service account)',
+      candidates: [],
+    };
+  }
+
+  const token = await accessToken(key);
+  const meta = await api<SheetsMeta>(metaUrl(ref.spreadsheetId), token);
+  const tabs = (meta.sheets ?? [])
+    .map((s) => ({ title: s.properties?.title ?? '', gid: String(s.properties?.sheetId ?? '') }))
+    .filter((t) => t.title);
+  const candidates = tabs.map((t) => t.title);
+
+  const named =
+    tabs.find((t) => headerKey(t.title) === 'maindatabase') ??
+    tabs.find((t) => headerKey(t.title).includes('maindatabase'));
+
+  const linked = ref.gid ? tabs.find((t) => t.gid === ref.gid) : undefined;
+  const first = named ?? linked ?? tabs[0];
+  if (!first) throw new GoogleSheetAccessError('That spreadsheet has no tabs.');
+
+  const sheet = await fetchTab(ref.spreadsheetId, first.title, first.gid, token, meta);
+  if (named) {
+    return { sheet, reason: `read the tab named "${first.title}"`, candidates };
+  }
+
+  // The linked tab may not be the tracker at all. Only go looking if it plainly is not.
+  if (looksLikeMainDatabase(sheet.headers)) {
+    return { sheet, reason: `read the tab in the link, "${first.title}"`, candidates };
+  }
+
+  const scored = await Promise.all(
+    tabs
+      .filter((t) => t.gid !== first.gid)
+      .map(async (t) => {
+        const s = await fetchTab(ref.spreadsheetId, t.title, t.gid, token, meta);
+        return { tab: t, sheet: s, score: scoreAsMainDatabase(s.headers) };
+      }),
+  );
+  const best = scored.sort((a, b) => b.score - a.score)[0];
+  if (!best || best.score === 0) {
+    // Say so rather than quietly handing back a tab with no owners in it. A run off the
+    // wrong tab produces zero recipients and no error, which is far harder to diagnose.
+    return {
+      sheet,
+      reason:
+        `read "${first.title}", but no tab in this spreadsheet has an owner column ` +
+        '(Owner Name, Owner Address or Registered Proprietor) — this may not be the tracker',
+      candidates,
+    };
+  }
+  return {
+    sheet: best.sheet,
+    reason:
+      `read "${best.tab.title}" — the linked tab "${first.title}" has no owner column, ` +
+      'and this one does',
+    candidates,
+  };
+}
+
+/** One tab's values, given a token and metadata already in hand. */
+async function fetchTab(
+  spreadsheetId: string,
+  title: string,
+  gid: string,
+  token: string,
+  meta: SheetsMeta,
+): Promise<FetchedSheet> {
+  const values = await api<{ values?: unknown[][] }>(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}` +
+      `/values/${encodeURIComponent(title)}` +
+      '?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER',
+    token,
+  );
+  const grid = values.values ?? [];
+  return {
+    spreadsheetId,
+    spreadsheetTitle: meta.properties?.title ?? 'Untitled',
+    sheetTitle: title,
+    gid,
+    headers: (grid[0] ?? []).map((c) => String(c ?? '')),
+    rows: grid.slice(1),
+    via: 'service-account',
     fetchedAt: new Date(),
   };
 }

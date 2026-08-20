@@ -1,4 +1,15 @@
 /**
+ * Figment's live comps source: Squarefoot's "Market Watch for Commercial Shophouses"
+ * workbook, one tab per district.
+ *
+ * Pinned here so the app can offer it without anyone pasting a link — it is the same
+ * spreadsheet every time, and a mistyped id is a silent wrong-comps run. Override with
+ * COMPS_SHEET_URL in .env if the source ever moves.
+ */
+export const MARKET_WATCH_SHEET_URL =
+  'https://docs.google.com/spreadsheets/d/1UeigMbJP-mueP6yAW6urbEYaPWrM75g6fw1HUZ_HXuY/edit';
+
+/**
  * Comparables picked from a transactions sheet, in the "Market Watch for Commercial
  * Shophouses" shape — one tab per postal district, one row per transaction.
  *

@@ -40,6 +40,7 @@ export function UploadView({
     tabs: { gid: string; title: string; rowCount: number }[];
   } | null>(null);
   const [gid, setGid] = useState('');
+  const [picked, setPicked] = useState<{ reason: string; candidates: string[] } | null>(null);
   const [refreshed, setRefreshed] = useState<{
     rowsBefore: number;
     rowsAfter: number;
@@ -81,6 +82,7 @@ export function UploadView({
     if (!summary) return;
     setPreview(null);
     setRefreshed(null);
+    setPicked(summary.reason ? { reason: summary.reason, candidates: summary.candidates ?? [] } : null);
     setJob(summary);
   }
 
@@ -157,12 +159,12 @@ export function UploadView({
           >
             <Field
               label="Google Sheets link"
-              hint="Copy it from the browser bar. The #gid= on the end names the tab you are looking at."
+              hint="Just the link to the spreadsheet — it does not matter which tab you were on. The tab named Main Database is used."
             >
               <input
                 type="url"
                 value={sheetUrl}
-                placeholder="https://docs.google.com/spreadsheets/d/…/edit#gid=1663840271"
+                placeholder="https://docs.google.com/spreadsheets/d/…/edit"
                 onChange={(e) => {
                   setSheetUrl(e.target.value);
                   setTabs(null);
@@ -172,8 +174,9 @@ export function UploadView({
             </Field>
 
             {tabs ? (
-              <Field label={`Tab in "${tabs.spreadsheetTitle}"`} hint="Defaults to the one your link points at.">
+              <Field label={`Tab in "${tabs.spreadsheetTitle}"`} hint="Only needed to override the automatic choice.">
                 <select value={gid} onChange={(e) => setGid(e.target.value)}>
+                  <option value="">Find the Main Database automatically</option>
                   {tabs.tabs.map((t) => (
                     <option key={t.gid} value={t.gid}>
                       {t.title}
@@ -186,7 +189,7 @@ export function UploadView({
             <div className="actions">
               <button disabled={!sheetUrl || !!busy} onClick={() => void onFetchSheet()}>
                 {busy === 'Fetch sheet' ? <Spinner /> : null}
-                Fetch this tab
+                {gid ? 'Fetch the chosen tab' : 'Fetch the tracker'}
               </button>
               {health?.googleServiceAccount ? (
                 <button
@@ -259,6 +262,17 @@ export function UploadView({
                       <br />
                       <b>Read without credentials</b>, which means this sheet is currently readable
                       by anyone holding its URL.
+                    </>
+                  ) : null}
+                  {picked ? (
+                    <>
+                      <br />
+                      <span style={{ fontSize: 12.5 }}>
+                        Tab chosen: {picked.reason}
+                        {picked.candidates.length > 1
+                          ? ` — of ${picked.candidates.length} tabs in this spreadsheet.`
+                          : '.'}
+                      </span>
                     </>
                   ) : null}
                 </Msg>

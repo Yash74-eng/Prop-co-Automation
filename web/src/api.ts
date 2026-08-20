@@ -144,6 +144,8 @@ export interface Health {
   wordReason: string | null;
   /** Service-account address, or null when a private Google Sheet cannot be read. */
   googleServiceAccount: string | null;
+  /** The comps workbook, so it never has to be pasted. */
+  compsSheetUrl: string;
 }
 
 export interface MergeFieldCheck {
@@ -188,9 +190,17 @@ export const api = {
   upload: (file: File) =>
     fetch('/api/jobs', { method: 'POST', body: form({ file }) }).then(handle<JobSummary>),
 
-  /** Read the tracker straight out of a Google Sheet tab instead of uploading an export. */
+  /**
+   * Read the tracker straight out of a Google Sheet instead of uploading an export.
+   *
+   * `gid` is an override. Without it the server finds the Main Database tab rather than
+   * trusting whichever tab the pasted link happened to point at, and `reason` says which
+   * tab it read and why.
+   */
   fromGoogleSheet: (url: string, gid?: string) =>
-    fetch('/api/jobs/from-google-sheet', json({ url, gid })).then(handle<JobSummary>),
+    fetch('/api/jobs/from-google-sheet', json({ url, gid })).then(
+      handle<JobSummary & { tabChosen?: string; reason?: string; candidates?: string[] }>,
+    ),
 
   /** Pull the same tab again and rebuild from it. */
   refreshGoogleSheet: (id: string) =>
@@ -216,7 +226,7 @@ export const api = {
     ),
 
   /** Read every tab of the comps workbook live — one per district in the Market Watch source. */
-  compsFromGoogleSheet: (id: string, url: string) =>
+  compsFromGoogleSheet: (id: string, url?: string) =>
     fetch(`/api/jobs/${id}/comps-from-google-sheet`, json({ url })).then(
       handle<JobSummary & { mode?: string; transactions?: number; districts?: number[] }>,
     ),

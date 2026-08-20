@@ -56,7 +56,7 @@ export function ConfigureView({
   onChange: (next: RunSettings) => void;
   onRan: () => void;
 }) {
-  const { job, busy, guard, setJob } = state;
+  const { job, health, busy, guard, setJob } = state;
   const [compsFile, setCompsFile] = useState<File | null>(null);
   const [compsUrl, setCompsUrl] = useState('');
   const [suppressFile, setSuppressFile] = useState<File | null>(null);
@@ -317,30 +317,38 @@ export function ConfigureView({
 
             <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
               <span className="hint" style={{ margin: 0 }}>
-                Or read the comps workbook live. Every tab is fetched, since the Market Watch
-                source keeps one per district:
+                Or read the live comps workbook — every district tab, in one go. No link needed:
+                it is always the same spreadsheet.
               </span>
-              <input
-                type="url"
-                style={{ marginTop: 6 }}
-                value={compsUrl}
-                placeholder="https://docs.google.com/spreadsheets/d/…/edit"
-                onChange={(e) => setCompsUrl(e.target.value)}
-              />
               <button
-                className="secondary tiny"
-                style={{ marginTop: 6 }}
-                disabled={!compsUrl || !!busy}
+                style={{ marginTop: 8 }}
+                disabled={!!busy}
                 onClick={() =>
                   void guard(
                     'Comps fetch',
-                    () => api.compsFromGoogleSheet(job.id, compsUrl),
+                    () => api.compsFromGoogleSheet(job.id, compsUrl || undefined),
                     'Comps read from Google Sheets',
                   ).then((r) => r && setJob(r))
                 }
               >
-                {busy === 'Comps fetch' ? <Spinner /> : null} Fetch comps from Google Sheets
+                {busy === 'Comps fetch' ? <Spinner /> : null} Fetch live comps (Market Watch)
               </button>
+              <details style={{ marginTop: 10 }}>
+                <summary className="hint" style={{ cursor: 'pointer' }}>
+                  Use a different comps spreadsheet
+                </summary>
+                <input
+                  type="url"
+                  style={{ marginTop: 6 }}
+                  value={compsUrl}
+                  placeholder={health?.compsSheetUrl ?? 'https://docs.google.com/spreadsheets/d/…'}
+                  onChange={(e) => setCompsUrl(e.target.value)}
+                />
+                <p className="hint" style={{ marginTop: 4 }}>
+                  Leave empty to use the default. Anything here must be shared with the same
+                  service account.
+                </p>
+              </details>
               {job.compsGoogleSheet ? (
                 <p className="hint" style={{ marginTop: 6 }}>
                   Live from <b>{job.compsGoogleSheet.spreadsheetTitle}</b> —{' '}

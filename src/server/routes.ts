@@ -50,7 +50,11 @@ import {
   openDataResolver,
   OpenDataUnavailableError,
 } from '../bizfile/opendata.js';
-import { defaultCompSelection, parseTransactionSheet } from '../comps/marketWatch.js';
+import {
+  defaultCompSelection,
+  MARKET_WATCH_SHEET_URL,
+  parseTransactionSheet,
+} from '../comps/marketWatch.js';
 import { defaultPricing } from '../comps/pricing.js';
 import { CLAUDE_SHEET_HEADERS, crossCheck, findingsToRows } from '../verify/claude.js';
 import { isCorporateName } from '../core/names.js';
@@ -65,6 +69,7 @@ import {
 import {
   fetchAllTabs,
   fetchedSheetToXlsx,
+  fetchMainDatabase,
   fetchSheet,
   listTabs,
   parseSheetUrl,
@@ -91,6 +96,11 @@ export const router = Router();
 function fail(res: import('express').Response, error: unknown, status = 400) {
   const message = error instanceof Error ? error.message : String(error);
   res.status(status).json({ error: message });
+}
+
+/** The comps spreadsheet, overridable per machine without a rebuild. */
+export function compsSheetUrl(): string {
+  return squash(process.env.COMPS_SHEET_URL) || MARKET_WATCH_SHEET_URL;
 }
 
 /** DD MMM YYYY HH:mm, for a note that says when a live fetch happened. */
@@ -133,13 +143,25 @@ router.post('/jobs/from-google-sheet', async (req, res) => {
   try {
     const url = squash(req.body?.url);
     const ref = parseSheetUrl(url);
-    if (req.body?.gid) ref.gid = String(req.body.gid);
 
-    const sheet = await fetchSheet(ref);
+    // An explicit gid means the operator picked a tab from the list, so honour it. With no
+    // pick, go looking for the Main Database rather than trusting the tab that happened to
+    // be open when the link was copied.
+    const picked = req.body?.gid
+      ? {
+          sheet: await fetchSheet({ ...ref, gid: String(req.body.gid) }),
+          reason: 'read the tab you chose',
+          candidates: [] as string[],
+        }
+      : await fetchMainDatabase(ref);
+    const { sheet } = picked;
+
     if (sheet.rows.length === 0) {
       throw new Error(
-        `The tab "${sheet.sheetTitle}" is empty. Check you pasted the link with the right ` +
-          '#gid= — the fragment is what names the tab you are looking at.',
+        `The tab "${sheet.sheetTitle}" is empty.` +
+          (picked.candidates.length
+            ? ` Tabs in this spreadsheet: ${picked.candidates.join(', ')}.`
+            : ' Check the #gid= on the link — the fragment names the tab you are looking at.'),
       );
     }
 
@@ -164,9 +186,9 @@ router.post('/jobs/from-google-sheet', async (req, res) => {
     logStep(
       job,
       'google-sheet',
-      `Fetched ${sheet.rows.length} rows from ${label} via ${sheet.via}`,
+      `${sheet.rows.length} rows — ${picked.reason} (${sheet.via})`,
     );
-    res.json(jobSummary(job));
+    res.json({ ...jobSummary(job), tabChosen: sheet.sheetTitle, reason: picked.reason, candidates: picked.candidates });
   } catch (error) {
     fail(res, error);
   }
@@ -314,7 +336,9 @@ router.post('/jobs/:id/comps', upload.single('file'), (req, res) => {
 router.post('/jobs/:id/comps-from-google-sheet', async (req, res) => {
   try {
     const job = requireJob(String(req.params.id));
-    const url = squash(req.body?.url);
+    // Defaults to the Market Watch workbook: it is the same spreadsheet every time, and a
+    // mistyped id would be a silent wrong-comps run rather than an error.
+    const url = squash(req.body?.url) || compsSheetUrl();
     const ref = parseSheetUrl(url);
 
     const tabs = await fetchAllTabs(ref);

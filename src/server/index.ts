@@ -2,7 +2,7 @@
 import express from 'express';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { router } from './routes.js';
+import { compsSheetUrl, router } from './routes.js';
 import { pruneStorage, STORAGE_DIR } from './store.js';
 import { wordStatus } from '../mailmerge/wordMerge.js';
 import { serviceAccount } from '../sheets/google.js';
@@ -31,6 +31,8 @@ app.get('/api/health', async (_req, res) => {
     // Whether a private Google Sheet can be read. Without a key only a link-shared or
     // published sheet works, and the UI should say so before the fetch fails.
     googleServiceAccount: googleServiceAccountEmail(),
+    // The comps workbook, so the UI can offer it without anyone pasting a link.
+    compsSheetUrl: compsSheetUrl(),
   });
 });
 
