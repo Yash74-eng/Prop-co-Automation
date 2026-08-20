@@ -24,16 +24,38 @@ npm --prefix web install
 npm run web:build
 ```
 
-## 3. Create your .env
+## 3. Put the .env file in place
 
-Copy `.env.example` to `.env`. It is already commented; the only value you must fill in is
-the Anthropic key, and only if you want step 4's Claude cross-check:
+**Ask Yash for the `.env` file and drop it into the repo folder, replacing the one there if
+any.** It carries the keys and is deliberately not in the repo, so a fresh clone has no
+`.env` at all and the credential-backed steps stay switched off until you add it.
+
+It belongs at the top level, beside `package.json`:
+
+```
+Prop-co-Automation\
+  .env            <-- here
+  package.json
+  src\
+  web\
+```
+
+If you would rather set it up yourself, copy `.env.example` to `.env` and fill in the values
+described under **Credentials** below. The only one that is required for the Claude
+cross-check is:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Everything else works with the defaults. **`.env` is gitignored — never commit it.**
+Everything else works with the defaults.
+
+**Never commit `.env`.** It is gitignored, and it holds live keys — send it person to person,
+not through the repo.
+
+> Windows hides files whose name starts with a dot in some views, and File Explorer may save
+> it as `.env.txt`. If the app cannot see your keys, turn on **View → File name extensions**
+> and check the name is exactly `.env`.
 
 ## 4. Run it
 

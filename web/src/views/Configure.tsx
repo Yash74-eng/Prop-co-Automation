@@ -31,7 +31,7 @@ export function defaultSettings(sheetName = ''): RunSettings {
     sheetName,
     mailDate: new Date().toISOString().slice(0, 10),
     validityDays: 14,
-    outreachMode: 'exclude-contacted',
+    outreachMode: 'all',
     outreachMatchText: '',
     alwaysExcludeOptOut: true,
     maxPropertiesPerOwner: 5,
@@ -165,10 +165,10 @@ export function ConfigureView({
         <div className="grid">
           <Field label="Outreach filter">
             <select value={settings.outreachMode} onChange={(e) => set('outreachMode', e.target.value)}>
-              <option value="exclude-contacted">Never contacted only (blank) — recommended</option>
+              <option value="all">Everyone — no filter (default)</option>
+              <option value="exclude-contacted">Never contacted only (outreach column blank)</option>
               <option value="only-tagged">Already-tagged rows only</option>
               <option value="match">Rows containing text…</option>
-              <option value="all">No filter — everyone</option>
             </select>
           </Field>
           {settings.outreachMode === 'match' ? (
@@ -191,9 +191,24 @@ export function ConfigureView({
         />
 
         {settings.outreachMode === 'all' ? (
+          <Msg kind="info">
+            Every row is kept regardless of what the outreach column says, so an owner who was
+            already written to will be written to again. Opt-outs and do-not-send rows are still
+            dropped.
+            <br />
+            <span style={{ fontSize: 12.5 }}>
+              This is the default because the tracker's outreach column carries batch tags rather
+              than a plain contacted / not-contacted marker — filtering on blanks discarded every
+              row. Switch to <b>Never contacted only</b> if your sheet leaves that column empty
+              until a letter goes out.
+            </span>
+          </Msg>
+        ) : null}
+        {settings.outreachMode === 'exclude-contacted' ? (
           <Msg kind="warn">
-            No filter means already-contacted owners are included again. Use this only when you
-            intend to re-contact.
+            This keeps only rows whose outreach column is <b>blank</b>. If your tracker tags rows
+            with a batch name, that is every row dropped — check the funnel on the next step before
+            trusting the result.
           </Msg>
         ) : null}
       </Card>

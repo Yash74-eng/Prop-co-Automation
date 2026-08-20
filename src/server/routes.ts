@@ -68,7 +68,6 @@ import {
   fetchSheet,
   listTabs,
   parseSheetUrl,
-
 } from '../sheets/google.js';
 import type { AddressOverride } from '../core/types.js';
 import {
@@ -441,7 +440,7 @@ router.post('/jobs/:id/run', async (req, res) => {
       mailDate,
       validityDays: numberOr(body.validityDays, 14),
       outreachFilter: {
-        mode: body.outreachMode ?? 'exclude-contacted',
+        mode: body.outreachMode ?? 'all',
         matchText: squash(body.outreachMatchText) || undefined,
         alwaysExcludeOptOut: body.alwaysExcludeOptOut !== false,
       },

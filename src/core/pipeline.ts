@@ -55,7 +55,11 @@ export function defaultOptions(
     channel,
     mailDate: new Date(),
     validityDays: 14,
-    outreachFilter: { mode: 'exclude-contacted', alwaysExcludeOptOut: true },
+    // Everyone by default. "exclude-contacted" keeps only rows whose outreach column is
+    // blank, which silently drops the whole sheet when the tracker tags rows with a batch
+    // name — 274 source rows, 0 recipients, and nothing obviously wrong. Opt-outs are
+    // still removed: `all` means every row we are permitted to contact, not literally all.
+    outreachFilter: { mode: 'all', alwaysExcludeOptOut: true },
     maxPropertiesPerOwner: 5,
     maxOwnersBeforeCollapse: 4,
     maxOwnerNameLength: 120,

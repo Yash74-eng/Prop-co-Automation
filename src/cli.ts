@@ -101,7 +101,7 @@ const options = defaultOptions(channel, {
   mailDate: parseLooseDate(args['mail-date']) ?? new Date(),
   validityDays: Number(args.validity ?? 14),
   outreachFilter: {
-    mode: (args.outreach as never) ?? 'exclude-contacted',
+    mode: (args.outreach as never) ?? 'all',
     matchText: args['outreach-text'] ? String(args['outreach-text']) : undefined,
     alwaysExcludeOptOut: true,
   },
