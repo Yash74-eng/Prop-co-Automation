@@ -311,9 +311,19 @@ export function ConfigureView({
         ) : null}
       </Card>
 
-      <Card title="Exclusion and dedupe rules">
+      <Card
+        title="Who to skip, and how to address the rest"
+        hint="Each of these changes what a specific row does. The number you set is spelled out beneath it."
+      >
         <div className="grid">
-          <Field label="Remove owners holding more than" hint="Properties in the working set.">
+          <Field
+            label="Skip owners who own a lot of shophouses"
+            hint={
+              `Right now: an owner with more than ${settings.maxPropertiesPerOwner} propert` +
+              `${settings.maxPropertiesPerOwner === 1 ? 'y' : 'ies'} in this run gets no letter at ` +
+              'all. They tend to be investors rather than sellers. They are listed on the Excluded sheet.'
+            }
+          >
             <input
               type="number"
               min={1}
@@ -321,7 +331,15 @@ export function ConfigureView({
               onChange={(e) => set('maxPropertiesPerOwner', Number(e.target.value))}
             />
           </Field>
-          <Field label="“Owners of ___” above N owners" hint="Counts inline “Total N owners” too.">
+
+          <Field
+            label="When a property has too many owners to name"
+            hint={
+              `Right now: more than ${settings.maxOwnersBeforeCollapse} owners on one property and the ` +
+              'letter is addressed to "Owners of 27 CLUB STREET" instead of listing every name. ' +
+              `With ${settings.maxOwnersBeforeCollapse} or fewer they are joined, e.g. "TAN AH KOW & LIM BEE HOON".`
+            }
+          >
             <input
               type="number"
               min={1}
@@ -329,7 +347,14 @@ export function ConfigureView({
               onChange={(e) => set('maxOwnersBeforeCollapse', Number(e.target.value))}
             />
           </Field>
-          <Field label="Max name length" hint="Longer names collapse to “Owners of ___”.">
+
+          <Field
+            label="Longest name that fits on an envelope"
+            hint={
+              `Right now: a name longer than ${settings.maxOwnerNameLength} characters is replaced by ` +
+              '"Owners of <address>", because it would not print on one line.'
+            }
+          >
             <input
               type="number"
               min={20}
@@ -343,38 +368,38 @@ export function ConfigureView({
           <Check
             checked={settings.removeAgenciesAndDevelopers}
             onChange={(v) => set('removeAgenciesAndDevelopers', v)}
-            label="Remove agencies, associations and large developers"
-            hint="Institutions on the avoid-list are only flagged in Comments, never removed — a human decides."
+            label="Skip estate agencies and large developers"
+            hint="They are not going to sell to us. Temples, clan associations and town councils are only flagged in Comments, never removed — you decide on those."
           />
           <Check
             checked={settings.groupByOwnerName}
             onChange={(v) => set('groupByOwnerName', v)}
-            label="Never merge co-owners onto one letter"
-            hint="Off by default, so co-owners at one address become “A & B” per the spec."
+            label="Send co-owners of one property a letter each"
+            hint="Off means two people at the same address get one letter addressed to both, e.g. “TAN AH KOW & LIM BEE HOON”. On means each gets their own — more postage, more letters."
           />
           {isLetter ? (
             <Check
               checked={settings.deriveMissingPrices}
               onChange={(v) => set('deriveMissingPrices', v)}
-              label="Derive prices from GFA × neighbourhood psf when no comps row matches"
-              hint="Derived rows are marked VERIFY BEFORE SENDING in Comments. Turn off to leave them blank."
+              label="Estimate a price when no comparable is found"
+              hint="Uses the property's floor area × the neighbourhood rate. Those rows say VERIFY BEFORE SENDING in Comments. Off leaves both price cells empty instead."
             />
           ) : null}
           <Check
             checked={settings.includeAuditSheets}
             onChange={(v) => set('includeAuditSheets', v)}
-            label="Include audit subsheets"
+            label="Add the working-out sheets to the workbook"
             hint={
               settings.channel === 'postcard'
-                ? 'Turn off for exactly the two postcard sheets.'
-                : 'Exploded owner rows, merge decisions, exclusions, flags, comps used, run summary.'
+                ? 'Every owner row, every merge decision, and why each dropped row was dropped. Turn off to get exactly the two postcard sheets and nothing else.'
+                : 'Every owner row, every merge decision, why each dropped row was dropped, and which comps were used. Turn off for just the letter sheet.'
             }
           />
           <Check
             checked={settings.autoDownload}
             onChange={(v) => set('autoDownload', v)}
-            label="Save the workbook as soon as it is generated"
-            hint="Downloads without a second click. The file stays available on Review either way."
+            label="Download the workbook the moment it is ready"
+            hint="Saves a click. It stays available on the Review step either way."
           />
         </div>
       </Card>

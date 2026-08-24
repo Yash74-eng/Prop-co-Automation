@@ -58,8 +58,35 @@ function googleServiceAccountEmail(): string | null {
 
 const webDist = resolve('web/dist');
 if (existsSync(webDist)) {
-  app.use(express.static(webDist));
-  app.get(/^(?!\/api).*/, (_req, res) => res.sendFile(resolve(webDist, 'index.html')));
+  /**
+   * index.html is never cached; the files it points at always are.
+   *
+   * Vite fingerprints every asset (`index-CsUmApuL.js`), so those are safe to keep
+   * forever — the name changes when the contents do. The shell is the opposite: one
+   * stale copy pins the browser to the previous build's asset names, and the app quietly
+   * carries on running last week's UI. That looks like a feature not having shipped, and
+   * it is the hardest kind of report to act on.
+   */
+  const noStore = (res: import('express').Response) => {
+    res.setHeader('Cache-Control', 'no-store, must-revalidate');
+    res.setHeader('Expires', '0');
+  };
+
+  app.use(
+    express.static(webDist, {
+      etag: true,
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('index.html')) noStore(res);
+        else if (/[.-][A-Za-z0-9_-]{8,}\.(js|css|woff2?|png|svg)$/.test(filePath)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+      },
+    }),
+  );
+  app.get(/^(?!\/api).*/, (_req, res) => {
+    noStore(res);
+    res.sendFile(resolve(webDist, 'index.html'));
+  });
 } else {
   app.get('/', (_req, res) =>
     res
