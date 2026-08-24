@@ -10,6 +10,7 @@ import {
   jobSummary,
   listJobs,
   logStep,
+  ensureStorage,
   requireJob,
   OUTPUT_DIR,
   UPLOAD_DIR,
@@ -21,7 +22,7 @@ import {
   readWorkbookSheets,
   sheetToTable,
 } from '../excel/read.js';
-import { parseMainDatabase } from '../core/mainDatabase.js';
+import { outreachLabel, parseMainDatabase } from '../core/mainDatabase.js';
 import { parseCompsTable } from '../core/comps.js';
 import { defaultOptions, runPipeline } from '../core/pipeline.js';
 import { findInstitutionsSheetName, loadConfig, parseInstitutionsSheet } from '../core/config.js';
@@ -85,7 +86,12 @@ import { writeFileSync } from 'node:fs';
 
 const upload = multer({
   storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
+    destination: (_req, _file, cb) => {
+      // The folder can disappear under a running server — someone clears storage/ to
+      // reclaim disk. Recreate it here so an upload heals the problem instead of failing.
+      ensureStorage();
+      cb(null, UPLOAD_DIR);
+    },
     filename: (_req, file, cb) => cb(null, `${randomUUID()}${extname(file.originalname)}`),
   }),
   limits: { fileSize: 80 * 1024 * 1024 },
@@ -96,6 +102,40 @@ export const router = Router();
 function fail(res: import('express').Response, error: unknown, status = 400) {
   const message = error instanceof Error ? error.message : String(error);
   res.status(status).json({ error: message });
+}
+
+/**
+ * The job's source workbook, guaranteed to be on disk.
+ *
+ * A job lives in memory while its file lives on disk, and the two can part company —
+ * `storage/` gets cleared to reclaim space, or a file ages out of the startup prune. The
+ * old behaviour was a bare `ENOENT ... \storage\uploads\<uuid>.xlsx` from whichever route
+ * touched it first, which reads like a bug in the app rather than a missing file.
+ *
+ * A job fetched from Google Sheets is reproducible, so re-fetch it and carry on. An
+ * uploaded one is not, so say plainly that it has to be uploaded again.
+ */
+async function sourceFile(job: import('./store.js').Job): Promise<string> {
+  if (existsSync(job.sourcePath)) return job.sourcePath;
+  ensureStorage();
+
+  const source = job.googleSheet;
+  if (source) {
+    const sheet = await fetchSheet({ spreadsheetId: source.spreadsheetId, gid: source.gid });
+    const path = join(UPLOAD_DIR, `${randomUUID()}.xlsx`);
+    await fetchedSheetToXlsx(sheet, path);
+    job.sourcePath = path;
+    job.sourceTable = undefined;
+    job.googleSheet = { ...source, fetchedAt: sheet.fetchedAt, rows: sheet.rows.length };
+    logStep(job, 'google-sheet', `Local copy was missing — re-fetched ${sheet.rows.length} rows`);
+    return path;
+  }
+
+  throw new Error(
+    `The uploaded workbook for this job is no longer on disk, so it cannot be read again. ` +
+      'This happens when the storage folder is cleared. Upload the file again, or start from ' +
+      'a Google Sheets link — those are re-fetched automatically when the local copy goes.',
+  );
 }
 
 /** The comps spreadsheet, overridable per machine without a rebuild. */
@@ -285,10 +325,10 @@ router.get('/jobs/:id', (req, res) => {
 });
 
 /** GET /api/jobs/:id/sheets/:name/preview — headers + first rows, for the sheet picker. */
-router.get('/jobs/:id/sheets/:name/preview', (req, res) => {
+router.get('/jobs/:id/sheets/:name/preview', async (req, res) => {
   try {
     const job = requireJob(String(req.params.id));
-    const { wb } = readWorkbookSheets(job.sourcePath);
+    const { wb } = readWorkbookSheets(await sourceFile(job));
     const table = sheetToTable(wb, req.params.name);
     const db = parseMainDatabase(table);
     res.json({
@@ -448,7 +488,8 @@ router.post('/jobs/:id/run', async (req, res) => {
     const body = req.body ?? {};
 
     const sheetName = squash(body.sheetName) || job.sheetName;
-    const table = readSheet(job.sourcePath, sheetName || undefined);
+    const sourcePath = await sourceFile(job);
+    const table = readSheet(sourcePath, sheetName || undefined);
     job.sheetName = table.sheetName;
     job.sourceTable = table;
 
@@ -464,6 +505,8 @@ router.post('/jobs/:id/run', async (req, res) => {
       mailDate,
       validityDays: numberOr(body.validityDays, 14),
       outreachFilter: {
+        // A list of states is what the wizard sends; mode stays for the CLI.
+        include: Array.isArray(body.outreachInclude) ? body.outreachInclude : undefined,
         mode: body.outreachMode ?? 'all',
         matchText: squash(body.outreachMatchText) || undefined,
         alwaysExcludeOptOut: body.alwaysExcludeOptOut !== false,
@@ -494,7 +537,7 @@ router.post('/jobs/:id/run', async (req, res) => {
 
     // Institutions-to-avoid comes from the uploaded workbook when it carries the sheet,
     // so the tracker stays the source of truth; config/ is only a fallback.
-    const config = loadConfig(readInstitutionsFromWorkbook(job.sourcePath));
+    const config = loadConfig(readInstitutionsFromWorkbook(sourcePath));
 
     const result = runPipeline(db.rows, options, {
       institutions: config.institutions,
@@ -694,7 +737,8 @@ async function regenerate(
       ? (job.result?.lawyerLetterRows.length ?? 0)
       : (job.result?.postcardRows.length ?? 0);
 
-  const table = job.sourceTable ?? readSheet(job.sourcePath, job.sheetName || undefined);
+  const path = await sourceFile(job);
+  const table = job.sourceTable ?? readSheet(path, job.sheetName || undefined);
   const db = parseMainDatabase(table);
   const config = loadConfig(readInstitutionsFromWorkbook(job.sourcePath));
 
@@ -891,9 +935,14 @@ router.get('/jobs/:id/funnel', (req, res) => {
           .sort((a, b) => b[1] - a[1])
           .map(([label, count]) => ({ label, count })),
       })),
+      // Words, not internal state names: "Sent, but came back undelivered" instead of
+      // "delivery-failed", so the breakdown reads without a decoder.
       outreach: Object.entries(s)
         .filter(([k]) => k.startsWith('outreach_'))
-        .map(([k, v]) => ({ label: k.replace('outreach_', ''), count: v })),
+        .map(([k, v]) => ({
+          label: outreachLabel(k.replace('outreach_', '')),
+          count: v,
+        })),
     });
   } catch (error) {
     fail(res, error);

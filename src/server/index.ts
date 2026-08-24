@@ -14,6 +14,16 @@ const app = express();
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// Never let a browser or proxy hold onto an API response. Every one of these describes
+// mutable server state — a job's sheet list, a run's progress, a funnel — and a cached
+// copy read after the state moved is indistinguishable from a bug in the app.
+app.use('/api', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+
 app.use('/api', router);
 
 app.get('/api/health', async (_req, res) => {

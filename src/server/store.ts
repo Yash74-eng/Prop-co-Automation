@@ -16,9 +16,21 @@ export const STORAGE_DIR = resolve(process.env.STORAGE_DIR ?? 'storage');
 export const UPLOAD_DIR = join(STORAGE_DIR, 'uploads');
 export const OUTPUT_DIR = join(STORAGE_DIR, 'outputs');
 
-for (const dir of [STORAGE_DIR, UPLOAD_DIR, OUTPUT_DIR]) {
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+/**
+ * Make sure the storage folders exist.
+ *
+ * Called before every write, not once at boot: deleting `storage/` while the app is
+ * running used to break it until a restart — new uploads failed because multer's
+ * destination was gone, which surfaced as a bare ENOENT with a path in it. Creating a
+ * directory that already exists costs nothing, so there is no reason to only try once.
+ */
+export function ensureStorage(): void {
+  for (const dir of [STORAGE_DIR, UPLOAD_DIR, OUTPUT_DIR]) {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  }
 }
+
+ensureStorage();
 
 export interface Job {
   id: string;

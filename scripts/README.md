@@ -13,6 +13,7 @@ Start the app first (`Run PropCo.bat`, or `npm start`); everything here talks to
 | `e2e-api.mjs <tracker.xlsx> <channel> <out>` | Upload → generate → funnel → download. Asserts exactly one channel's sheets are written. |
 | `e2e-ui.mjs <out-prefix> [tracker.xlsx]` | Drives the wizard in a real browser and screenshots the step-1 channel gate. |
 | `e2e-templates.mjs <out>` | Downloads the Main Database template and uploads it back. A template the app cannot read is worse than none. |
+| `e2e-selectable.mjs` | Deletes storage/ under a running server, then checks the error explains itself; each outreach state selects its own row; each pricing method gives a different range. |
 | `e2e-sheet-defaults.mjs` | The two things nobody should have to know: which tab holds the owner rows, and where the comps live. |
 | `e2e-outreach-default.mjs` | A tracker whose outreach column is all batch tags. The default must keep every row; exclude-contacted must still drop them all. |
 | `e2e-live-comps.mjs [sheet-url]` | Live comps from Google Sheets, and the channel split: the letter is priced, the postcard has no price columns at all. |

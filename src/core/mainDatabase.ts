@@ -9,7 +9,7 @@
  * Headers are matched on a normalised key, so trailing spaces, casing and punctuation
  * differences between exports do not break the import.
  */
-import { SourceRow, OutreachClassification } from './types.js';
+import { SourceRow, OutreachClassification, OutreachStatus } from './types.js';
 import { headerKey, isBlank, parseLooseDate, squash, toNumber, upper } from './text.js';
 
 /** Canonical field -> the header spellings we accept for it. */
@@ -219,6 +219,71 @@ export function classifyOutreach(value: unknown): OutreachClassification {
   }
   if (BATCH_RE.test(text)) return { status: 'batch-tag', text, date };
   return { status: 'other', text, date };
+}
+
+/**
+ * What each outreach state means, in words.
+ *
+ * Defined once and used by the picker, the funnel and the Excluded sheet, so a row's
+ * reason for being dropped reads the same wherever it is seen. `label` has to make sense
+ * on its own — "batch-tag" tells a reader nothing about whether a letter went out.
+ */
+export const OUTREACH_STATES: {
+  status: OutreachStatus;
+  label: string;
+  detail: string;
+  /** Whether this row is a candidate to post to. */
+  sendable: boolean;
+}[] = [
+  {
+    status: 'blank',
+    label: 'Not contacted yet',
+    detail: 'The outreach column is empty — no letter or postcard has gone out.',
+    sendable: true,
+  },
+  {
+    status: 'delivery-failed',
+    label: 'Sent, but came back undelivered',
+    detail:
+      'A send date with a failure note, e.g. "27 Jun 2025 - Delivery Failed" or ' +
+      '"No such person". The address was wrong, so these are worth re-sending once it is fixed.',
+    sendable: true,
+  },
+  {
+    status: 'batch-tag',
+    label: 'Tagged for a batch, not yet sent',
+    detail: 'A batch name rather than a date, e.g. "Batch 3".',
+    sendable: true,
+  },
+  {
+    status: 'sent-date',
+    label: 'Already sent',
+    detail: 'A clean send date with no failure note. Including these re-contacts the owner.',
+    sendable: true,
+  },
+  {
+    status: 'other',
+    label: 'Something else in the column',
+    detail: 'Text that is neither a date, a batch tag, nor a known status.',
+    sendable: true,
+  },
+  {
+    status: 'opt-out',
+    label: 'Opted out — asked not to be contacted',
+    detail: 'Never posted to while "Always drop opt-outs" is on, whatever else is selected.',
+    sendable: false,
+  },
+  {
+    status: 'do-not-send',
+    label: 'Marked do not send',
+    detail: 'Never posted to while "Always drop opt-outs" is on, whatever else is selected.',
+    sendable: false,
+  },
+];
+
+/** The human label for one state, for a funnel row or an exclusion reason. */
+export function outreachLabel(status: string): string {
+  return OUTREACH_STATES.find((s) => s.status === status)?.label ?? status;
 }
 
 /** Which column drives the outreach filter for a channel. */

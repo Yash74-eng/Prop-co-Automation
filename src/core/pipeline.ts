@@ -108,6 +108,25 @@ export function runPipeline(
       continue;
     }
 
+    // An explicit list of states wins over the preset: it says what is wanted instead of
+    // naming a mode whose meaning has to be looked up.
+    const include = options.outreachFilter.include;
+    if (include?.length) {
+      if (!include.includes(cls.status)) {
+        exclusions.push({
+          sourceRow: row.sourceRow,
+          addressId: row.addressId,
+          address: row.address,
+          stage: 'outreach-filter',
+          reason: `Outreach state "${cls.status}" was not selected`,
+          detail: cls.text || '(blank)',
+        });
+        continue;
+      }
+      afterOutreach.push(row);
+      continue;
+    }
+
     let keep: boolean;
     switch (options.outreachFilter.mode) {
       case 'exclude-contacted':

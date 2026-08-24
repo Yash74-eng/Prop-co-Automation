@@ -178,10 +178,17 @@ export interface PipelineOptions {
   /** Days added to Mail_Date for Valid_Date. */
   validityDays: number;
   outreachFilter: {
+    /**
+     * Which outreach states to keep, e.g. ["blank","delivery-failed"] for "never
+     * contacted, plus the ones that came back undelivered". Takes precedence over `mode`
+     * when set — it says exactly what is wanted rather than naming a preset.
+     */
+    include?: OutreachStatus[];
+    /** Preset, kept for the CLI and for callers that do not need per-state control. */
     mode: 'exclude-contacted' | 'only-tagged' | 'match' | 'all';
     /** Case-insensitive substring, used when mode === 'match'. */
     matchText?: string;
-    /** Drop opt-outs / do-not-send rows regardless of mode. */
+    /** Drop opt-outs / do-not-send rows regardless of the above. */
     alwaysExcludeOptOut: boolean;
   };
   /** Owners holding strictly more than this many properties are removed. */

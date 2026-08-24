@@ -3,6 +3,83 @@ import { api } from '../api.js';
 import type { JobState } from '../useJob.js';
 import { Card, Check, Field, Msg, Spinner, TemplateLink } from '../ui.jsx';
 
+/**
+ * The outreach states a row can be in, in words. Mirrors OUTREACH_STATES on the server;
+ * the wizard sends the ticked list and the server filters on exactly that.
+ */
+const OUTREACH_STATES = [
+  {
+    status: 'blank',
+    label: 'Not contacted yet',
+    detail: 'The outreach column is empty — nothing has gone out to this owner.',
+    sendable: true,
+  },
+  {
+    status: 'delivery-failed',
+    label: 'Sent, but came back undelivered',
+    detail:
+      'A send date with a failure note, e.g. "27 Jun 2025 - Delivery Failed". The address was wrong, so these are worth re-sending once it is corrected.',
+    sendable: true,
+  },
+  {
+    status: 'batch-tag',
+    label: 'Tagged for a batch, not yet sent',
+    detail: 'A batch name rather than a date, e.g. "Batch 3".',
+    sendable: true,
+  },
+  {
+    status: 'sent-date',
+    label: 'Already sent',
+    detail: 'A clean send date with no failure note. Including these re-contacts the owner.',
+    sendable: true,
+  },
+  {
+    status: 'other',
+    label: 'Something else in the column',
+    detail: 'Text that is neither a date, a batch tag, nor a known status.',
+    sendable: true,
+  },
+];
+
+/** The ways the offer range can be derived. Labels say what happens, not the method name. */
+const PRICING_METHODS = [
+  {
+    value: 'figment-band',
+    label: 'Agreed formula — off the two comps in the letter (recommended)',
+    detail:
+      'The top of the range is 5% over the better comparable. The bottom starts at a 20% ' +
+      'haircut off the weaker one, then is held so the range never implies a discount outside ' +
+      '1.35× to 1.60× of the top. Everything lands on a S$250,000 multiple.',
+  },
+  {
+    value: 'comps-range',
+    label: 'The comps exactly — lowest comp to highest comp',
+    detail:
+      'No uplift and no haircut: the range is what the two comparables actually sold for. ' +
+      'Easiest to defend, but it leaves no negotiating room.',
+  },
+  {
+    value: 'comps-median-band',
+    label: 'Median comp price, then −5% / +10%',
+    detail:
+      'Takes the middle comparable price and puts a fixed band either side. Ignores how far ' +
+      'apart the comps are, so two distant comps still give a narrow range.',
+  },
+  {
+    value: 'comps-psf-band',
+    label: 'Median comp psf × this property’s GFA, then −5% / +10%',
+    detail:
+      'The only method that adjusts for the size of the property being written about. Needs a ' +
+      'GFA on the row; without one it falls back to the median comp price and says so in Comments.',
+  },
+  {
+    value: 'manual',
+    label: 'Leave both blank — price by hand',
+    detail:
+      'The letter merges with empty price cells, for a person to fill in before sending.',
+  },
+];
+
 export type Channel = 'lawyer-letter' | 'postcard';
 
 export interface RunSettings {
@@ -11,6 +88,10 @@ export interface RunSettings {
   sheetName: string;
   mailDate: string;
   validityDays: number;
+  /** Outreach states to keep. Empty means nothing is kept, which the UI blocks. */
+  outreachInclude: string[];
+  /** Which formula derives minimum_Price and higher_Price. */
+  pricingMethod: string;
   outreachMode: string;
   outreachMatchText: string;
   alwaysExcludeOptOut: boolean;
@@ -31,6 +112,10 @@ export function defaultSettings(sheetName = ''): RunSettings {
     sheetName,
     mailDate: new Date().toISOString().slice(0, 10),
     validityDays: 14,
+    // Every state a letter could reasonably go to. Opt-outs are excluded separately, so
+    // they are not on this list at all.
+    outreachInclude: OUTREACH_STATES.filter((s) => s.sendable).map((s) => s.status),
+    pricingMethod: 'figment-band',
     outreachMode: 'all',
     outreachMatchText: '',
     alwaysExcludeOptOut: true,
@@ -162,53 +247,66 @@ export function ConfigureView({
             : 'Filters on the "Postcard Outreach Date" column, which mixes send dates and delivery-failure notes.'
         }
       >
-        <div className="grid">
-          <Field label="Outreach filter">
-            <select value={settings.outreachMode} onChange={(e) => set('outreachMode', e.target.value)}>
-              <option value="all">Everyone — no filter (default)</option>
-              <option value="exclude-contacted">Never contacted only (outreach column blank)</option>
-              <option value="only-tagged">Already-tagged rows only</option>
-              <option value="match">Rows containing text…</option>
-            </select>
-          </Field>
-          {settings.outreachMode === 'match' ? (
-            <Field label="Text to match" hint="Case-insensitive substring, e.g. “Batch 3”.">
-              <input
-                type="text"
-                value={settings.outreachMatchText}
-                placeholder="Batch 3"
-                onChange={(e) => set('outreachMatchText', e.target.value)}
-              />
-            </Field>
-          ) : null}
+        <p className="hint" style={{ marginTop: 0 }}>
+          Tick the rows you want to post to. Every state your sheet can hold is listed, so what
+          you see is what gets included — no mode to decode.
+        </p>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {OUTREACH_STATES.filter((s) => s.sendable).map((s) => (
+            <Check
+              key={s.status}
+              checked={settings.outreachInclude.includes(s.status)}
+              onChange={(on) =>
+                set(
+                  'outreachInclude',
+                  on
+                    ? [...settings.outreachInclude, s.status]
+                    : settings.outreachInclude.filter((x) => x !== s.status),
+                )
+              }
+              label={s.label}
+              hint={s.detail}
+            />
+          ))}
+        </div>
+
+        <div className="actions" style={{ marginTop: 8 }}>
+          <button
+            className="ghost tiny"
+            onClick={() =>
+              set('outreachInclude', OUTREACH_STATES.filter((s) => s.sendable).map((s) => s.status))
+            }
+          >
+            Select all
+          </button>
+          <button className="ghost tiny" onClick={() => set('outreachInclude', ['blank'])}>
+            Only not-contacted
+          </button>
+          <button
+            className="ghost tiny"
+            onClick={() => set('outreachInclude', ['delivery-failed'])}
+          >
+            Only returned undelivered
+          </button>
         </div>
 
         <Check
           checked={settings.alwaysExcludeOptOut}
           onChange={(v) => set('alwaysExcludeOptOut', v)}
-          label="Always drop opt-outs and do-not-send rows"
-          hint="Applies whatever the filter above is set to. Leave this on."
+          label="Never post to owners who opted out or are marked do-not-send"
+          hint="Applies whatever is ticked above. Leave this on."
         />
 
-        {settings.outreachMode === 'all' ? (
-          <Msg kind="info">
-            Every row is kept regardless of what the outreach column says, so an owner who was
-            already written to will be written to again. Opt-outs and do-not-send rows are still
-            dropped.
-            <br />
-            <span style={{ fontSize: 12.5 }}>
-              This is the default because the tracker's outreach column carries batch tags rather
-              than a plain contacted / not-contacted marker — filtering on blanks discarded every
-              row. Switch to <b>Never contacted only</b> if your sheet leaves that column empty
-              until a letter goes out.
-            </span>
+        {settings.outreachInclude.length === 0 ? (
+          <Msg kind="err">
+            Nothing is ticked, so no rows would be kept and the run would produce an empty sheet.
+            Tick at least one.
           </Msg>
-        ) : null}
-        {settings.outreachMode === 'exclude-contacted' ? (
-          <Msg kind="warn">
-            This keeps only rows whose outreach column is <b>blank</b>. If your tracker tags rows
-            with a batch name, that is every row dropped — check the funnel on the next step before
-            trusting the result.
+        ) : settings.outreachInclude.includes('sent-date') ? (
+          <Msg kind="info">
+            <b>Already sent</b> is included, so owners who have had a clean send will be written to
+            again. Untick it if this run is only for people who have not heard from you.
           </Msg>
         ) : null}
       </Card>
@@ -398,23 +496,42 @@ export function ConfigureView({
 
       {isLetter ? (
         <Card
-          title="How the offer range is set"
-          hint="Fixed formula off the two comparables printed in the letter — no meeting, same answer every time."
-          flat
+          title="How minimum_Price and higher_Price are worked out"
+          hint="Same inputs always give the same range, so any figure in a letter can be defended."
         >
-          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13.5, lineHeight: 1.8 }}>
-            <li>
-              <b>higher_Price</b> — 1.05 × the <i>higher</i> comparable, to the nearest S$250,000.
-            </li>
-            <li>
-              <b>minimum_Price</b> — 0.80 × the <i>lower</i> comparable, then held inside 1.35× to
-              1.60× below the higher price, to the nearest S$250,000.
-            </li>
-          </ul>
+          <Field label="Pricing method">
+            <select
+              value={settings.pricingMethod}
+              onChange={(e) => set('pricingMethod', e.target.value)}
+            >
+              {PRICING_METHODS.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Msg kind="info">
+            {PRICING_METHODS.find((m) => m.value === settings.pricingMethod)?.detail}
+          </Msg>
+
+          {settings.pricingMethod === 'figment-band' ? (
+            <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 13.5, lineHeight: 1.8 }}>
+              <li>
+                <b>higher_Price</b> — 1.05 × the <i>higher</i> comparable, to the nearest
+                S$250,000.
+              </li>
+              <li>
+                <b>minimum_Price</b> — 0.80 × the <i>lower</i> comparable, then held inside 1.35×
+                to 1.60× below the higher price, to the nearest S$250,000.
+              </li>
+            </ul>
+          ) : null}
+
           <p className="hint" style={{ marginTop: 10 }}>
-            The clamp is what stops two comparables that are far apart producing a range nobody
-            would send. Every row records its own arithmetic in <code>Comments</code>, so any figure
-            in the letter can be traced back to the two comps beside it.
+            Whichever you pick, every row records its own arithmetic in <code>Comments</code>, so a
+            figure in the letter can be traced back to the two comps printed beside it.
           </p>
         </Card>
       ) : null}
