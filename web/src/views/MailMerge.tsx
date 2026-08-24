@@ -48,8 +48,6 @@ export function MailMergeView({ state }: { state: JobState }) {
               </span>
               <TemplateLink kind="letter-docx" label="Lawyer letter template .docx" />
               <TemplateLink kind="envelope-docx" label="Envelope template .docx" />
-              <TemplateLink kind="postcard-docx" label="Postcard template .docx" />
-              <TemplateLink kind="merge-fields" label="Merge field reference .xlsx" />
             </div>
           </Field>
 

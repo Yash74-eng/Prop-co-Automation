@@ -56,7 +56,7 @@ import {
   MARKET_WATCH_SHEET_URL,
   parseTransactionSheet,
 } from '../comps/marketWatch.js';
-import { defaultPricing } from '../comps/pricing.js';
+import { DEFAULT_BAND_MULTIPLIERS, defaultPricing } from '../comps/pricing.js';
 import { CLAUDE_SHEET_HEADERS, crossCheck, findingsToRows } from '../verify/claude.js';
 import { isCorporateName } from '../core/names.js';
 import { formatDate, normKey, parseLooseDate, squash } from '../core/text.js';
@@ -532,6 +532,13 @@ router.post('/jobs/:id/run', async (req, res) => {
         lowerBand: numberOr(body.pricingLowerBand, 0.05),
         upperBand: numberOr(body.pricingUpperBand, 0.1),
         rounding: numberOr(body.derivedRounding, 50_000),
+        // The two multipliers of the agreed band. numberOr falls back on a blank or
+        // unparseable box rather than pricing every letter off zero.
+        topUplift: numberOr(body.pricingTopUplift, DEFAULT_BAND_MULTIPLIERS.topUplift),
+        bottomHaircut: numberOr(
+          body.pricingBottomHaircut,
+          DEFAULT_BAND_MULTIPLIERS.bottomHaircut,
+        ),
       }),
     });
 

@@ -80,6 +80,38 @@ const PRICING_METHODS = [
   },
 ];
 
+/** Comps used for the worked example. Close together, because the selection picks the
+ *  tightest cluster it can find — that is the shape a real run sees. */
+const EXAMPLE_COMPS = { low: 11_000_000, high: 12_000_000 };
+
+/**
+ * The band worked through with the numbers currently in the boxes.
+ *
+ * Reports which rule set the bottom, and that is the point of it. The haircut only decides
+ * the bottom when its result lands inside the 1.35×–1.60× band; outside it, the bound
+ * decides and the haircut has no effect at all. Without saying so, changing that box and
+ * watching nothing happen looks like a bug rather than the formula working.
+ */
+function bandExample(
+  topUplift: number,
+  bottomHaircut: number,
+): { range: string; clampedBy: string | null } {
+  const STEP = 250_000;
+  const ok = (n: number) => (Number.isFinite(n) && n > 0 ? n : 1);
+
+  const top = Math.round((ok(topUplift) * EXAMPLE_COMPS.high) / STEP) * STEP;
+  const raw = Math.floor((ok(bottomHaircut) * EXAMPLE_COMPS.low) / STEP) * STEP;
+  const wide = Math.ceil(top / 1.6 / STEP) * STEP;
+  const tight = Math.floor(top / 1.35 / STEP) * STEP;
+  const bottom = [raw, wide, tight].sort((a, b) => a - b)[1];
+
+  const money = (n: number) => `S$${n.toLocaleString('en-SG')}`;
+  return {
+    range: `${money(bottom)} – ${money(top)}`,
+    clampedBy: bottom === raw ? null : bottom === wide ? '1.60×' : '1.35×',
+  };
+}
+
 export type Channel = 'lawyer-letter' | 'postcard';
 
 export interface RunSettings {
@@ -92,6 +124,10 @@ export interface RunSettings {
   outreachInclude: string[];
   /** Which formula derives minimum_Price and higher_Price. */
   pricingMethod: string;
+  /** Agreed band: multiplier on the higher comp. */
+  pricingTopUplift: number;
+  /** Agreed band: multiplier on the lower comp. */
+  pricingBottomHaircut: number;
   outreachMode: string;
   outreachMatchText: string;
   alwaysExcludeOptOut: boolean;
@@ -116,6 +152,8 @@ export function defaultSettings(sheetName = ''): RunSettings {
     // they are not on this list at all.
     outreachInclude: OUTREACH_STATES.filter((s) => s.sendable).map((s) => s.status),
     pricingMethod: 'figment-band',
+    pricingTopUplift: 1.05,
+    pricingBottomHaircut: 0.8,
     outreachMode: 'all',
     outreachMatchText: '',
     alwaysExcludeOptOut: true,
@@ -371,12 +409,10 @@ export function ConfigureView({
             label="Skip estate agencies and large developers"
             hint="They are not going to sell to us. Temples, clan associations and town councils are only flagged in Comments, never removed — you decide on those."
           />
-          <Check
-            checked={settings.groupByOwnerName}
-            onChange={(v) => set('groupByOwnerName', v)}
-            label="Send co-owners of one property a letter each"
-            hint="Off means two people at the same address get one letter addressed to both, e.g. “TAN AH KOW & LIM BEE HOON”. On means each gets their own — more postage, more letters."
-          />
+          {/* groupByOwnerName is deliberately not offered. Co-owners at one address get one
+              letter addressed to both — that is the spec, not a preference, and a switch to
+              un-merge them only invites sending two letters to one letterbox. The option
+              still exists on the pipeline for the CLI. */}
           {isLetter ? (
             <Check
               checked={settings.deriveMissingPrices}
@@ -542,16 +578,77 @@ export function ConfigureView({
           </Msg>
 
           {settings.pricingMethod === 'figment-band' ? (
-            <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 13.5, lineHeight: 1.8 }}>
-              <li>
-                <b>higher_Price</b> — 1.05 × the <i>higher</i> comparable, to the nearest
-                S$250,000.
-              </li>
-              <li>
-                <b>minimum_Price</b> — 0.80 × the <i>lower</i> comparable, then held inside 1.35×
-                to 1.60× below the higher price, to the nearest S$250,000.
-              </li>
-            </ul>
+            <>
+              <div className="grid" style={{ marginTop: 4 }}>
+                <Field
+                  label="Top of the range — multiply the higher comp by"
+                  hint={`1.05 asks 5% over the better comparable. 1.00 asks exactly what it sold for.`}
+                >
+                  <input
+                    type="number"
+                    step={0.01}
+                    min={0.5}
+                    max={2}
+                    value={settings.pricingTopUplift}
+                    onChange={(e) => set('pricingTopUplift', Number(e.target.value))}
+                  />
+                </Field>
+                <Field
+                  label="Bottom of the range — multiply the lower comp by"
+                  hint="0.80 opens at a 20% discount to the weaker comparable. Higher means a tighter range."
+                >
+                  <input
+                    type="number"
+                    step={0.01}
+                    min={0.1}
+                    max={1.5}
+                    value={settings.pricingBottomHaircut}
+                    onChange={(e) => set('pricingBottomHaircut', Number(e.target.value))}
+                  />
+                </Field>
+              </div>
+
+              <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 13.5, lineHeight: 1.8 }}>
+                <li>
+                  <b>higher_Price</b> — {settings.pricingTopUplift} × the <i>higher</i> comparable,
+                  to the nearest S$250,000.
+                </li>
+                <li>
+                  <b>minimum_Price</b> — {settings.pricingBottomHaircut} × the <i>lower</i>{' '}
+                  comparable, then held inside 1.35× to 1.60× below the higher price, to the
+                  nearest S$250,000.
+                </li>
+              </ul>
+
+              {/* Worked through with the numbers currently in the boxes, so the effect of a
+                  change is visible before a run is committed to it. */}
+              {(() => {
+                const ex = bandExample(settings.pricingTopUplift, settings.pricingBottomHaircut);
+                return (
+                  <>
+                    <p className="hint" style={{ marginTop: 8 }}>
+                      On comps of S$11,000,000 and S$12,000,000 that gives <b>{ex.range}</b>.
+                    </p>
+                    {ex.clampedBy ? (
+                      <Msg kind="warn">
+                        With these comps your bottom multiplier makes <b>no difference</b> — the{' '}
+                        {ex.clampedBy} limit sets the bottom instead. That limit exists so the
+                        range never implies an implausible discount, and it takes over whenever the
+                        multiplier would land outside 1.35× to 1.60× below the top. Move it closer
+                        to 0.80 to have it bite.
+                      </Msg>
+                    ) : null}
+                  </>
+                );
+              })()}
+
+              {settings.pricingTopUplift < 1 ? (
+                <Msg kind="warn">
+                  An uplift below 1.00 means the top of the range is <b>less</b> than the better
+                  comparable sold for.
+                </Msg>
+              ) : null}
+            </>
           ) : null}
 
           <p className="hint" style={{ marginTop: 10 }}>

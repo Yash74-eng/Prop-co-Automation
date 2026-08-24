@@ -104,6 +104,72 @@ test('no comparable prices means no price, not a zero', () => {
   assert.equal(figmentBand([0, Number.NaN]), undefined);
 });
 
+/** ------------------------------------------------- operator-set multipliers ---- */
+
+test('the two multipliers are settable and the defaults are unchanged', () => {
+  const comps = [11_000_000, 12_000_000];
+  // Passing nothing must equal passing the documented defaults.
+  assert.deepEqual(figmentBand(comps), figmentBand(comps, { topUplift: 1.05, bottomHaircut: 0.8 }));
+
+  // 1.00 asks exactly what the better comparable sold for: MROUND(12,000,000) = 12,000,000.
+  assert.equal(figmentBand(comps, { topUplift: 1 })?.higherPrice, 12_000_000);
+  // 1.10 asks 10% over: MROUND(13,200,000) -> 13,250,000.
+  assert.equal(figmentBand(comps, { topUplift: 1.1 })?.higherPrice, 13_250_000);
+});
+
+test('a bigger haircut lowers the bottom, until the clamp stops it', () => {
+  const comps = [11_000_000, 12_000_000];
+  const gentle = figmentBand(comps, { bottomHaircut: 0.9 })!;
+  const harsh = figmentBand(comps, { bottomHaircut: 0.5 })!;
+
+  // 0.90 x 11m = 9,900,000 -> floors to 9,750,000, above the 1.35x bound, so clamped down.
+  assert.equal(gentle.minimumPrice, 9_250_000);
+  // 0.50 x 11m = 5,500,000, below the 1.60x bound, so clamped up rather than used raw.
+  assert.equal(harsh.minimumPrice, 8_000_000);
+  assert.ok(harsh.minimumPrice < gentle.minimumPrice + 1);
+});
+
+test('the minimum stays below the higher price for any multipliers a person might type', () => {
+  for (const topUplift of [0.8, 1, 1.05, 1.25, 1.5]) {
+    for (const bottomHaircut of [0.3, 0.8, 1, 1.4]) {
+      for (const comps of [[3_000_000, 3_500_000], [11_000_000, 12_000_000], [20_000_000, 39_000_000]]) {
+        const band = figmentBand(comps, { topUplift, bottomHaircut })!;
+        assert.ok(
+          band.minimumPrice < band.higherPrice,
+          `inverted at top=${topUplift} bottom=${bottomHaircut} comps=${comps}`,
+        );
+        assert.equal(band.minimumPrice % 250_000, 0);
+        assert.equal(band.higherPrice % 250_000, 0);
+      }
+    }
+  }
+});
+
+test('a blank or nonsense multiplier falls back rather than pricing at zero', () => {
+  const comps = [11_000_000, 12_000_000];
+  const expected = figmentBand(comps);
+  for (const bad of [0, -1, Number.NaN, undefined, Number.POSITIVE_INFINITY]) {
+    assert.deepEqual(
+      figmentBand(comps, { topUplift: bad as number, bottomHaircut: bad as number }),
+      expected,
+      `did not fall back for ${String(bad)}`,
+    );
+  }
+});
+
+test('Comments records the multipliers actually used, not the defaults', () => {
+  const priced = priceFromComps(
+    [comp(11_000_000), comp(12_000_000)],
+    {},
+    defaultPricing({ topUplift: 1.2, bottomHaircut: 0.6 }),
+  );
+  // Otherwise a row priced with a changed uplift is indistinguishable from a normal one.
+  // Two decimals throughout, so "1.20" and "0.60" read as deliberate settings.
+  assert.match(priced.basis, /1\.20 x highest/);
+  assert.match(priced.basis, /0\.60 x lowest/);
+  assert.equal(priced.higherPrice, 14_500_000); // MROUND(1.2 x 12m = 14.4m) -> 14.5m
+});
+
 /** ------------------------------------------------------- through the pipeline ---- */
 
 test('figment-band is the default method', () => {

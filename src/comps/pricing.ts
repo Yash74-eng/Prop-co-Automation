@@ -31,6 +31,10 @@ export interface PricingOptions {
   upperBand: number;
   /** Round both figures to this increment. Not used by `figment-band`, which sets its own. */
   rounding: number;
+  /** `figment-band` only: multiplier on the higher comparable. Default 1.05. */
+  topUplift?: number;
+  /** `figment-band` only: multiplier on the lower comparable. Default 0.80. */
+  bottomHaircut?: number;
 }
 
 export function defaultPricing(over: Partial<PricingOptions> = {}): PricingOptions {
@@ -39,6 +43,8 @@ export function defaultPricing(over: Partial<PricingOptions> = {}): PricingOptio
     lowerBand: 0.05,
     upperBand: 0.1,
     rounding: 50_000,
+    topUplift: DEFAULT_BAND_MULTIPLIERS.topUplift,
+    bottomHaircut: DEFAULT_BAND_MULTIPLIERS.bottomHaircut,
     ...over,
   };
 }
@@ -83,15 +89,37 @@ const median = (values: number[]): number | undefined => {
  */
 const BAND = {
   step: 250_000,
-  /** Top of the range, over the better comparable. */
+  /** Top of the range, over the better comparable. Settable per run. */
   topUplift: 1.05,
-  /** Opening haircut off the weaker comparable. */
+  /** Opening haircut off the weaker comparable. Settable per run. */
   bottomHaircut: 0.8,
   /** The bottom may never be further below the top than this ... */
   spreadWide: 1.6,
   /** ... nor closer to it than this. */
   spreadTight: 1.35,
 };
+
+/** The two multipliers the operator can change. The rest of the band is fixed. */
+export interface BandMultipliers {
+  /** Applied to the higher comparable to set the top. Default 1.05. */
+  topUplift?: number;
+  /** Applied to the lower comparable to open the bottom. Default 0.80. */
+  bottomHaircut?: number;
+}
+
+export const DEFAULT_BAND_MULTIPLIERS = {
+  topUplift: BAND.topUplift,
+  bottomHaircut: BAND.bottomHaircut,
+} as const;
+
+/**
+ * A multiplier the operator typed, or the default.
+ *
+ * Zero, negative and non-numeric all fall back rather than producing a range of nothing —
+ * an empty box in the UI must not silently price every letter at 0.
+ */
+const multiplier = (value: number | undefined, fallback: number): number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
 
 const mround = (v: number, f: number) => Math.round(v / f) * f;
 const floorTo = (v: number, f: number) => Math.floor(v / f) * f;
@@ -107,12 +135,20 @@ export interface FigmentBand {
  * Apply the agreed formula to the comparable prices. Blank comparables are ignored the
  * way MAX and MIN ignore blank cells, so one comparable prices the row off itself.
  */
-export function figmentBand(compPrices: number[]): FigmentBand | undefined {
+export function figmentBand(
+  compPrices: number[],
+  over: BandMultipliers = {},
+): FigmentBand | undefined {
   const prices = compPrices.filter((p) => typeof p === 'number' && Number.isFinite(p) && p > 0);
   if (prices.length === 0) return undefined;
 
-  const higherPrice = mround(BAND.topUplift * Math.max(...prices), BAND.step);
-  const raw = floorTo(BAND.bottomHaircut * Math.min(...prices), BAND.step);
+  const topUplift = multiplier(over.topUplift, BAND.topUplift);
+  const bottomHaircut = multiplier(over.bottomHaircut, BAND.bottomHaircut);
+
+  const higherPrice = mround(topUplift * Math.max(...prices), BAND.step);
+  const raw = floorTo(bottomHaircut * Math.min(...prices), BAND.step);
+  // The clamp is what keeps minimum below higher whatever multipliers are chosen: both
+  // bounds are derived from the top, so a haircut of 1.5 still lands inside the band.
   const minimumPrice = mid3(
     raw,
     ceilTo(higherPrice / BAND.spreadWide, BAND.step),
@@ -146,16 +182,22 @@ export function priceFromComps(
     // Only the comparables the letter actually prints. Pricing off a comp the reader
     // cannot see would make the range unarguable in exactly the wrong way.
     const printed = comps.slice(0, 2).map((c) => c.price).filter((p): p is number => typeof p === 'number');
-    const band = figmentBand(printed);
+    const top = multiplier(options.topUplift, BAND.topUplift);
+    const bottom = multiplier(options.bottomHaircut, BAND.bottomHaircut);
+    const band = figmentBand(printed, { topUplift: top, bottomHaircut: bottom });
     if (!band) return { basis: 'Comparables carry no prices' };
     const money = (n: number) => `S$${n.toLocaleString('en-SG')}`;
     return {
       minimumPrice: band.minimumPrice,
       higherPrice: band.higherPrice,
+      // The multipliers actually used, not the defaults: a row priced with a changed
+      // uplift has to say so, or the Comments column stops being an audit trail.
       basis:
         `Priced off ${printed.length === 1 ? 'the comparable' : 'both comparables'} ` +
-        `(${printed.map(money).join(', ')}): top = 1.05 x highest, bottom = 0.80 x lowest ` +
-        `held within 1.35-1.60x of the top, all to the nearest ${money(BAND.step)}`,
+        `(${printed.map(money).join(', ')}): top = ${top.toFixed(2)} x highest, ` +
+        `bottom = ${bottom.toFixed(2)} x lowest held within ` +
+        `${BAND.spreadTight.toFixed(2)}-${BAND.spreadWide.toFixed(2)}x of the top, ` +
+        `all to the nearest ${money(BAND.step)}`,
     };
   }
 
