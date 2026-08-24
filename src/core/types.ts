@@ -184,6 +184,13 @@ export interface PipelineOptions {
      * when set — it says exactly what is wanted rather than naming a preset.
      */
     include?: OutreachStatus[];
+    /**
+     * Exact cell values to keep, e.g. ["", "Batch 3", "27 Jun 2025 - Delivery Failed"].
+     * Beats `include` and `mode`: it is the Excel-style pick, where the operator has seen
+     * the real values in their own column and chosen from them. An empty string means a
+     * blank cell, which is a value like any other.
+     */
+    includeValues?: string[];
     /** Preset, kept for the CLI and for callers that do not need per-state control. */
     mode: 'exclude-contacted' | 'only-tagged' | 'match' | 'all';
     /** Case-insensitive substring, used when mode === 'match'. */

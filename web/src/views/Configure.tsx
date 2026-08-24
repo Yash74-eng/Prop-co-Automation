@@ -41,6 +41,51 @@ const OUTREACH_STATES = [
   },
 ];
 
+/**
+ * The choices worth having as one click. `states: null` is the escape hatch — it opens the
+ * value picker, which lists what is actually in the column rather than these categories.
+ */
+const PRESETS: { key: string; label: string; detail: string; states: string[] | null }[] = [
+  {
+    key: 'all',
+    label: 'Everyone in the sheet',
+    detail: 'No filtering on the outreach column at all. Opt-outs are still dropped.',
+    states: ['blank', 'delivery-failed', 'batch-tag', 'sent-date', 'other'],
+  },
+  {
+    key: 'not-contacted',
+    label: 'Not contacted yet only',
+    detail: 'Rows where the outreach column is empty — nobody who has already had something.',
+    states: ['blank'],
+  },
+  {
+    key: 'returned',
+    label: 'Came back undelivered only',
+    detail:
+      'Rows with a failure note, e.g. "27 Jun 2025 - Delivery Failed". Use this to re-send once the addresses are corrected.',
+    states: ['delivery-failed'],
+  },
+  {
+    key: 'not-contacted-or-returned',
+    label: 'Not contacted yet, or came back undelivered',
+    detail: 'The two groups nobody has successfully received anything from.',
+    states: ['blank', 'delivery-failed'],
+  },
+  {
+    key: 'never-sent',
+    label: 'Everyone not yet sent to (empty or batch-tagged)',
+    detail: 'Blanks plus rows tagged for a batch, e.g. "Batch 3", which have not gone out.',
+    states: ['blank', 'batch-tag'],
+  },
+  {
+    key: 'custom',
+    label: 'Pick exact values from my sheet…',
+    detail:
+      'Opens the list of values actually in the column, with a count for each, and you tick the ones to include.',
+    states: null,
+  },
+];
+
 /** The ways the offer range can be derived. Labels say what happens, not the method name. */
 const PRICING_METHODS = [
   {
@@ -122,6 +167,8 @@ export interface RunSettings {
   validityDays: number;
   /** Outreach states to keep. Empty means nothing is kept, which the UI blocks. */
   outreachInclude: string[];
+  /** Exact column values to keep. Non-empty means the Excel-style pick is in force. */
+  outreachIncludeValues: string[];
   /** Which formula derives minimum_Price and higher_Price. */
   pricingMethod: string;
   /** Agreed band: multiplier on the higher comp. */
@@ -151,6 +198,7 @@ export function defaultSettings(sheetName = ''): RunSettings {
     // Every state a letter could reasonably go to. Opt-outs are excluded separately, so
     // they are not on this list at all.
     outreachInclude: OUTREACH_STATES.filter((s) => s.sendable).map((s) => s.status),
+    outreachIncludeValues: [],
     pricingMethod: 'figment-band',
     pricingTopUplift: 1.05,
     pricingBottomHaircut: 0.8,
@@ -183,6 +231,13 @@ export function ConfigureView({
   const [compsFile, setCompsFile] = useState<File | null>(null);
   const [compsUrl, setCompsUrl] = useState('');
   const [suppressFile, setSuppressFile] = useState<File | null>(null);
+  const [preset, setPreset] = useState('all');
+  const [outreachValues, setOutreachValues] = useState<{
+    column: string;
+    rows: number;
+    values: { value: string; status: string; label: string; count: number }[];
+  } | null>(null);
+  const [valueSearch, setValueSearch] = useState('');
 
   if (!job) return null;
   // Capture the narrowed job so the async closures below keep the non-null type.
@@ -192,6 +247,46 @@ export function ConfigureView({
     onChange({ ...settings, [key]: value });
 
   const isLetter = settings.channel === 'lawyer-letter';
+
+  /** Read the real column, and start with everything ticked so nothing silently narrows. */
+  async function loadOutreachValues() {
+    const found = await guard('Outreach values', () =>
+      api.outreachValues(
+        current.id,
+        settings.channel ?? 'lawyer-letter',
+        settings.sheetName || current.sheetName,
+      ),
+    );
+    if (!found) return;
+    setOutreachValues(found);
+    onChange({
+      ...settings,
+      outreachIncludeValues: found.values.map((v) => v.value),
+      outreachInclude: [],
+    });
+  }
+
+  const needle = valueSearch.trim().toLowerCase();
+  const visibleValues = (outreachValues?.values ?? []).filter(
+    (v) =>
+      !needle ||
+      v.value.toLowerCase().includes(needle) ||
+      v.label.toLowerCase().includes(needle) ||
+      (!v.value && '(blank)'.includes(needle)),
+  );
+  const selectedRowCount = (outreachValues?.values ?? [])
+    .filter((v) => settings.outreachIncludeValues.includes(v.value))
+    .reduce((sum, v) => sum + v.count, 0);
+
+  const usingValues = preset === 'custom';
+  const nothingSelected = usingValues
+    ? !!outreachValues && settings.outreachIncludeValues.length === 0
+    : settings.outreachInclude.length === 0;
+  const includesAlreadySent = usingValues
+    ? (outreachValues?.values ?? []).some(
+        (v) => v.status === 'sent-date' && settings.outreachIncludeValues.includes(v.value),
+      )
+    : settings.outreachInclude.includes('sent-date');
 
   async function run() {
     if (!settings.channel) return;
@@ -285,66 +380,175 @@ export function ConfigureView({
             : 'Filters on the "Postcard Outreach Date" column, which mixes send dates and delivery-failure notes.'
         }
       >
-        <p className="hint" style={{ marginTop: 0 }}>
-          Tick the rows you want to post to. Every state your sheet can hold is listed, so what
-          you see is what gets included — no mode to decode.
-        </p>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {OUTREACH_STATES.filter((s) => s.sendable).map((s) => (
-            <Check
-              key={s.status}
-              checked={settings.outreachInclude.includes(s.status)}
-              onChange={(on) =>
-                set(
-                  'outreachInclude',
-                  on
-                    ? [...settings.outreachInclude, s.status]
-                    : settings.outreachInclude.filter((x) => x !== s.status),
-                )
-              }
-              label={s.label}
-              hint={s.detail}
-            />
-          ))}
+        <div className="grid">
+          <Field label="Who to write to" hint={PRESETS.find((p) => p.key === preset)?.detail}>
+            <select
+              value={preset}
+              onChange={(e) => {
+                const next = PRESETS.find((p) => p.key === e.target.value);
+                if (!next) return;
+                setPreset(next.key);
+                if (next.states) {
+                  onChange({
+                    ...settings,
+                    outreachInclude: next.states,
+                    outreachIncludeValues: [],
+                  });
+                } else {
+                  // Custom: load the real values and start with everything ticked, so the
+                  // first state of the picker matches what the run would already do.
+                  void loadOutreachValues();
+                }
+              }}
+            >
+              {PRESETS.map((p) => (
+                <option key={p.key} value={p.key}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </Field>
         </div>
 
-        <div className="actions" style={{ marginTop: 8 }}>
-          <button
-            className="ghost tiny"
-            onClick={() =>
-              set('outreachInclude', OUTREACH_STATES.filter((s) => s.sendable).map((s) => s.status))
-            }
+        {/* ------------------------------------------- Excel-style value picker */}
+        {preset === 'custom' ? (
+          <div
+            style={{
+              marginTop: 12,
+              border: '1px solid var(--line)',
+              borderRadius: 8,
+              background: 'var(--panel-alt)',
+              padding: 12,
+            }}
           >
-            Select all
-          </button>
-          <button className="ghost tiny" onClick={() => set('outreachInclude', ['blank'])}>
-            Only not-contacted
-          </button>
-          <button
-            className="ghost tiny"
-            onClick={() => set('outreachInclude', ['delivery-failed'])}
-          >
-            Only returned undelivered
-          </button>
-        </div>
+            {!outreachValues ? (
+              <p className="hint" style={{ margin: 0 }}>
+                {busy === 'Outreach values' ? <Spinner /> : null} Reading the column…
+              </p>
+            ) : (
+              <>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'baseline',
+                    gap: 10,
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <b style={{ fontSize: 13.5 }}>{outreachValues.column}</b>
+                  <span className="muted" style={{ fontSize: 12.5 }}>
+                    {outreachValues.values.length} distinct values across{' '}
+                    {outreachValues.rows.toLocaleString('en-SG')} rows
+                  </span>
+                </div>
+
+                <input
+                  type="search"
+                  placeholder="Search these values…"
+                  value={valueSearch}
+                  onChange={(e) => setValueSearch(e.target.value)}
+                  style={{ marginTop: 8 }}
+                />
+
+                <div className="actions" style={{ marginTop: 8 }}>
+                  <button
+                    className="ghost tiny"
+                    onClick={() =>
+                      set('outreachIncludeValues', visibleValues.map((v) => v.value))
+                    }
+                  >
+                    Select all{valueSearch ? ' shown' : ''}
+                  </button>
+                  <button className="ghost tiny" onClick={() => set('outreachIncludeValues', [])}>
+                    Clear
+                  </button>
+                  <span className="muted" style={{ fontSize: 12.5 }}>
+                    {selectedRowCount.toLocaleString('en-SG')} of{' '}
+                    {outreachValues.rows.toLocaleString('en-SG')} rows selected
+                  </span>
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 8,
+                    maxHeight: 300,
+                    overflowY: 'auto',
+                    border: '1px solid var(--line)',
+                    borderRadius: 6,
+                    background: 'var(--panel)',
+                  }}
+                >
+                  {visibleValues.length === 0 ? (
+                    <p className="hint" style={{ padding: 10, margin: 0 }}>
+                      Nothing matches “{valueSearch}”.
+                    </p>
+                  ) : (
+                    visibleValues.map((v) => {
+                      const on = settings.outreachIncludeValues.includes(v.value);
+                      return (
+                        <label
+                          key={v.value || '(blank)'}
+                          style={{
+                            display: 'flex',
+                            gap: 9,
+                            alignItems: 'baseline',
+                            padding: '7px 10px',
+                            borderBottom: '1px solid var(--line)',
+                            cursor: 'pointer',
+                            fontSize: 13,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={on}
+                            onChange={() =>
+                              set(
+                                'outreachIncludeValues',
+                                on
+                                  ? settings.outreachIncludeValues.filter((x) => x !== v.value)
+                                  : [...settings.outreachIncludeValues, v.value],
+                              )
+                            }
+                          />
+                          <span style={{ flex: 1, minWidth: 0 }}>
+                            <span style={{ fontWeight: v.value ? 500 : 400 }}>
+                              {v.value || <i className="muted">(blank)</i>}
+                            </span>
+                            <br />
+                            <span className="muted" style={{ fontSize: 11.5 }}>
+                              {v.label}
+                            </span>
+                          </span>
+                          <span className="muted" style={{ fontSize: 12 }}>
+                            {v.count.toLocaleString('en-SG')}
+                          </span>
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        ) : null}
 
         <Check
           checked={settings.alwaysExcludeOptOut}
           onChange={(v) => set('alwaysExcludeOptOut', v)}
           label="Never post to owners who opted out or are marked do-not-send"
-          hint="Applies whatever is ticked above. Leave this on."
+          hint="Applies whatever is chosen above. Leave this on."
         />
 
-        {settings.outreachInclude.length === 0 ? (
+        {nothingSelected ? (
           <Msg kind="err">
-            Nothing is ticked, so no rows would be kept and the run would produce an empty sheet.
-            Tick at least one.
+            Nothing is selected, so the run would produce an empty sheet. Pick at least one.
           </Msg>
-        ) : settings.outreachInclude.includes('sent-date') ? (
+        ) : includesAlreadySent ? (
           <Msg kind="info">
-            <b>Already sent</b> is included, so owners who have had a clean send will be written to
-            again. Untick it if this run is only for people who have not heard from you.
+            This includes owners who have already had a clean send, so they will be written to
+            again. Choose <b>Not contacted yet only</b> if this run is for people who have not
+            heard from you.
           </Msg>
         ) : null}
       </Card>

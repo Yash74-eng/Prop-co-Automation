@@ -108,6 +108,26 @@ export function runPipeline(
       continue;
     }
 
+    // Exact values win over everything: the operator picked these from a list of what is
+    // actually in their column, so there is nothing left to infer.
+    const includeValues = options.outreachFilter.includeValues;
+    if (includeValues?.length) {
+      const wanted = new Set(includeValues.map((v) => normKey(v)));
+      if (!wanted.has(normKey(cls.text))) {
+        exclusions.push({
+          sourceRow: row.sourceRow,
+          addressId: row.addressId,
+          address: row.address,
+          stage: 'outreach-filter',
+          reason: `Outreach value "${cls.text || '(blank)'}" was not selected`,
+          detail: cls.text || '(blank)',
+        });
+        continue;
+      }
+      afterOutreach.push(row);
+      continue;
+    }
+
     // An explicit list of states wins over the preset: it says what is wanted instead of
     // naming a mode whose meaning has to be looked up.
     const include = options.outreachFilter.include;

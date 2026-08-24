@@ -22,7 +22,12 @@ import {
   readWorkbookSheets,
   sheetToTable,
 } from '../excel/read.js';
-import { outreachLabel, parseMainDatabase } from '../core/mainDatabase.js';
+import {
+  classifyOutreach,
+  outreachLabel,
+  outreachValue,
+  parseMainDatabase,
+} from '../core/mainDatabase.js';
 import { parseCompsTable } from '../core/comps.js';
 import { defaultOptions, runPipeline } from '../core/pipeline.js';
 import { findInstitutionsSheetName, loadConfig, parseInstitutionsSheet } from '../core/config.js';
@@ -301,6 +306,54 @@ router.post('/jobs/:id/refresh-google-sheet', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/jobs/:id/outreach-values — the distinct values in the outreach column.
+ *
+ * What Excel's column filter shows: every value actually present, with a count, so the
+ * choice is made against real data instead of against five abstract state names. Each
+ * carries the state it classifies as, which is what makes "27 Jun 2025 - Delivery Failed"
+ * legible as a failure rather than just another date.
+ */
+router.get('/jobs/:id/outreach-values', async (req, res) => {
+  try {
+    const job = requireJob(String(req.params.id));
+    const channel = req.query.channel === 'postcard' ? 'postcard' : 'lawyer-letter';
+    const sheetName = squash(req.query.sheetName) || job.sheetName;
+
+    const table = readSheet(await sourceFile(job), sheetName || undefined);
+    const db = parseMainDatabase(table);
+
+    const seen = new Map<string, { value: string; status: string; label: string; count: number }>();
+    for (const row of db.rows) {
+      const cls = classifyOutreach(outreachValue(row, channel));
+      // Group by the value as written, so "Batch 3" and "batch 3" do not split the list.
+      const key = normKey(cls.text);
+      const existing = seen.get(key);
+      if (existing) existing.count++;
+      else {
+        seen.set(key, {
+          value: cls.text,
+          status: cls.status,
+          label: outreachLabel(cls.status),
+          count: 1,
+        });
+      }
+    }
+
+    const values = [...seen.values()].sort(
+      (a, b) => b.count - a.count || a.value.localeCompare(b.value),
+    );
+    res.json({
+      column: channel === 'lawyer-letter' ? 'Lawyer Letter Outreach' : 'Postcard Outreach Date',
+      sheetName: table.sheetName,
+      rows: db.rows.length,
+      values,
+    });
+  } catch (error) {
+    fail(res, error);
+  }
+});
+
 /** GET /api/google-sheet/tabs?url=... — list the tabs so the right one can be picked. */
 router.get('/google-sheet/tabs', async (req, res) => {
   try {
@@ -507,6 +560,9 @@ router.post('/jobs/:id/run', async (req, res) => {
       outreachFilter: {
         // A list of states is what the wizard sends; mode stays for the CLI.
         include: Array.isArray(body.outreachInclude) ? body.outreachInclude : undefined,
+        includeValues: Array.isArray(body.outreachIncludeValues)
+          ? body.outreachIncludeValues
+          : undefined,
         mode: body.outreachMode ?? 'all',
         matchText: squash(body.outreachMatchText) || undefined,
         alwaysExcludeOptOut: body.alwaysExcludeOptOut !== false,

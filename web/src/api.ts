@@ -231,6 +231,23 @@ export const api = {
       handle<JobSummary & { mode?: string; transactions?: number; districts?: number[] }>,
     ),
 
+  /**
+   * Distinct values in the outreach column, with counts — what Excel's column filter
+   * shows, so the pick is made against the real sheet rather than five state names.
+   */
+  outreachValues: (id: string, channel: string, sheetName?: string) =>
+    fetch(
+      `/api/jobs/${id}/outreach-values?channel=${encodeURIComponent(channel)}` +
+        (sheetName ? `&sheetName=${encodeURIComponent(sheetName)}` : ''),
+    ).then(
+      handle<{
+        column: string;
+        sheetName: string;
+        rows: number;
+        values: { value: string; status: string; label: string; count: number }[];
+      }>,
+    ),
+
   job: (id: string) => fetch(`/api/jobs/${id}`).then(handle<JobSummary>),
 
   sheetPreview: (id: string, sheet: string) =>
