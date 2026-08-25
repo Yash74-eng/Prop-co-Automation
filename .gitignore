@@ -37,3 +37,7 @@ config/*.json
 *-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
 gcp-*.json
 .propco/
+
+# Deck artefacts. Regenerate with scripts/capture-screens.mjs + scripts/build-deck.mjs.
+deck-shots/
+*.pptx

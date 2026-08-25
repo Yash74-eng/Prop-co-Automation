@@ -29,6 +29,13 @@ Start the app first (`Run PropCo.bat`, or `npm start`); everything here talks to
 | `e2e-mailmerge-setup.mjs <out>` | Template validation, the wrong-template catch, and the script escape hatch. Needs no Word. |
 | `e2e-mailmerge.mjs <out-prefix>` | The full path including PDFs: test one, run all, zip. Needs Word **and an activated Office**. |
 
+## Deck
+
+| Script | What it does |
+|---|---|
+| `capture-screens.mjs <out-dir>` | Walks the wizard and screenshots each step as a readable 3:2 frame. Runs on the Main Database template, so no real owner data lands in a file that leaves the machine. |
+| `build-deck.mjs <shots-dir> <out.pptx>` | Turns those into a 16:9 deck. Verified by asking PowerPoint to open the result — a deck that needs repairing is worse than none. |
+
 ## Diagnostics
 
 | Script | Use when |

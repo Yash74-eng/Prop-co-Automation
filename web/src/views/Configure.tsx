@@ -654,7 +654,14 @@ export function ConfigureView({
           {!isLetter ? null : (
           <Field
             label="Comps source"
-            hint={`Currently: ${job.compsRows} rows from ${job.compsSource}`}
+            /* A transactions workbook leaves compsRows at 0 — it fills job.transactions
+               instead — so printing the row count read "Currently: 0 rows" while 2,806
+               transactions were loaded. compsSource already carries its own counts. */
+            hint={
+              job.compsRows > 0
+                ? `Currently: ${job.compsRows} benchmark rows from ${job.compsSource}`
+                : `Currently: ${job.compsSource}`
+            }
           >
             <input
               type="file"
